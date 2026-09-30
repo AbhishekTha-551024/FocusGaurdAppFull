@@ -1003,7 +1003,7 @@ class FocusGuardRepository @Inject constructor(
     // channelFlow restarts the Room query with the new day's boundary after each midnight,
     // ensuring the count correctly resets at 00:00 without requiring a process restart.
     val todayImpulsesBlockedCount: Flow<Int> = kotlinx.coroutines.flow.channelFlow {
-        while (!isClosedForSend) {
+        while (isActive) {
             val startOfDay = getStartOfDayMillis()
             val nextMidnight = startOfDay + 24L * 60L * 60L * 1000L
             val remainingMs = (nextMidnight - System.currentTimeMillis()).coerceAtLeast(60_000L)
