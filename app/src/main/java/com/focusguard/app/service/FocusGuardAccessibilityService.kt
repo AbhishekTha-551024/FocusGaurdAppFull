@@ -1538,7 +1538,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             )
         } else null
 
-        if (isHardBlocked || isTimeLimitExceeded || scheduleBlock != null) {
+        if ((isHardBlocked || isTimeLimitExceeded || scheduleBlock != null) && !sessionBlockManager.isAlwaysAllowedPackage(pkg)) {
             lastBlockTimestamp = nowRealtime
             val appLabel = getCachedAppLabel(pkg)
             val isLimit = !isHardBlocked && isTimeLimitExceeded && scheduleBlock == null
@@ -1962,6 +1962,11 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 lower.contains("telecom") ||
                 lower.contains("telephony") ||
                 lower.contains("phone") ||
+                lower.contains("truecaller") ||
+                lower == "com.callapp.contacts" ||
+                lower == "com.eycon.android" ||
+                lower == "com.syncme.syncmeapp" ||
+                lower.contains("callerid") ||
                 // SECURITY FIX: Use structured match instead of broad `contains("settings")` which
                 // allowed any app named e.g. "mysettings.bypass" to skip all time limits.
                 isKnownSettingsPackage(lower) ||

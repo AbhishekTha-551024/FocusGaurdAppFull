@@ -1,10 +1,16 @@
 package com.focusguard.app.ui.session
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.telephony.TelephonyManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -64,9 +70,41 @@ class SessionLockActivity : ComponentActivity() {
     @Inject
     lateinit var sessionBlockManager: SessionBlockManager
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var isReceiverRegistered = false
+
+    private val phoneCallReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
+                val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+                Log.d(TAG, "Phone call state changed: $state")
+                // When call terminates back to IDLE, reassert lock screen if session is still active
+                if (state == TelephonyManager.EXTRA_STATE_IDLE && sessionBlockManager.isSessionCurrentlyActive()) {
+                    mainHandler.postDelayed({
+                        if (sessionBlockManager.isSessionCurrentlyActive() && !sessionBlockManager.isInPhoneCall()) {
+                            SessionLockActivity.start(this@SessionLockActivity)
+                        }
+                    }, 500L)
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                phoneCallReceiver,
+                IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register phoneCallReceiver: ${e.message}")
+        }
 
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
         window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -246,7 +284,7 @@ class SessionLockActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive()) {
+        if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive() && !sessionBlockManager.isInPhoneCall()) {
             SessionLockActivity.start(this)
         }
     }
@@ -254,8 +292,8 @@ class SessionLockActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         // If the user tries to press HOME while on the Deep Focus lock screen (without launching an allowed tool):
-        // Immediately re-assert SessionLockActivity without animation!
-        if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive()) {
+        // Immediately re-assert SessionLockActivity without animation — only if not in an active phone call!
+        if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive() && !sessionBlockManager.isInPhoneCall()) {
             val intent = Intent(this, SessionLockActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -287,7 +325,7 @@ class SessionLockActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
             hideSystemBars()
-        } else if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive()) {
+        } else if (!isLaunchingAllowedTool && sessionBlockManager.isSessionCurrentlyActive() && !sessionBlockManager.isInPhoneCall()) {
             try {
                 @Suppress("WrongConstant")
                 val statusBarService = getSystemService("statusbar")
@@ -295,7 +333,7 @@ class SessionLockActivity : ComponentActivity() {
                 val collapse = statusBarManager.getMethod("collapsePanels")
                 collapse.invoke(statusBarService)
             } catch (_: Exception) {}
-            // Re-assert SessionLockActivity
+            // Re-assert SessionLockActivity only if not in a phone call
             SessionLockActivity.start(this)
         }
     }
@@ -303,6 +341,17 @@ class SessionLockActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         isLaunchingAllowedTool = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isReceiverRegistered) {
+            try {
+                unregisterReceiver(phoneCallReceiver)
+            } catch (_: Exception) {}
+            isReceiverRegistered = false
+        }
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onNewIntent(intent: Intent) {

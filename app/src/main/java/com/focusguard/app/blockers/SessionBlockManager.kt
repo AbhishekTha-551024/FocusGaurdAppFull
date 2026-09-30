@@ -2,6 +2,7 @@ package com.focusguard.app.blockers
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.SystemClock
 import android.provider.Telephony
 import android.telecom.TelecomManager
@@ -142,12 +143,29 @@ class SessionBlockManager @Inject constructor(
             return true
         }
 
+        // Truecaller & Popular Caller ID / Calling Apps (Never block calls)
+        if (pkg.contains("truecaller") ||
+            pkg == "com.callapp.contacts" ||
+            pkg == "com.eycon.android" ||
+            pkg == "com.syncme.syncmeapp" ||
+            pkg.contains("callerid") ||
+            pkg == "gogolook.callgogolook2" ||
+            pkg == "com.simplemobiletools.dialer"
+        ) {
+            return true
+        }
+
         // Default Phone App
         try {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
             val defaultDialer = telecomManager?.defaultDialerPackage
             if (defaultDialer != null && pkg == defaultDialer.lowercase()) return true
         } catch (_: Exception) {}
+
+        // If phone is actively ringing or on call, NEVER block whatever app is handling the call
+        if (isInPhoneCall()) {
+            return true
+        }
 
         // Default SMS App
         try {
@@ -166,6 +184,22 @@ class SessionBlockManager @Inject constructor(
         }
 
         return false
+    }
+
+    /**
+     * Detects if the device is currently ringing or in an active phone call
+     * using the system AudioManager mode (zero permissions required, 100% reliable).
+     */
+    fun isInPhoneCall(): Boolean {
+        return try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val mode = audioManager?.mode ?: AudioManager.MODE_NORMAL
+            mode == AudioManager.MODE_RINGTONE ||
+            mode == AudioManager.MODE_IN_CALL ||
+            mode == AudioManager.MODE_IN_COMMUNICATION
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun isSessionCurrentlyActive(): Boolean {
