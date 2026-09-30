@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Accessibility Service Configuration for FocusGuard
+    ====================================================
+    Events subscribed:
+      - typeWindowStateChanged: catches foreground app/activity changes (Settings, installer)
+      - typeWindowContentChanged: catches content updates within a window
+
+    Flags:
+      - flagRetrieveInteractiveWindows: needed to inspect window trees
+      - flagRequestFilterKeyEvents: required for onKeyEvent() to receive KEYCODE_BACK
+      - flagReportViewIds: fast view ID access
+
+    notificationTimeout="10" (10ms) — ultra-fast event delivery to eliminate multi-tap lag
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeViewLongClicked|typeViewTextChanged|typeViewScrolled|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagRequestFilterKeyEvents|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:canRequestFilterKeyEvents="true"
+    android:canPerformGestures="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="0"
+    android:settingsActivity=".ui.onboarding.OnboardingActivity" />

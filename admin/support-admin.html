@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FocusGuard &bull; Emergency Support Admin Portal</title>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  
+  <!-- Firebase SDKs (Compat for zero-bundler portable usage) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <!-- CryptoJS for HMAC-SHA256 calculation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
+
+  <style>
+    :root {
+      --bg-dark: #050d09;
+      --card-bg: rgba(13, 29, 21, 0.75);
+      --card-border: rgba(34, 197, 94, 0.2);
+      --emerald-500: #22c55e;
+      --emerald-600: #16a34a;
+      --emerald-400: #4ade80;
+      --amber-400: #fbbf24;
+      --text-main: #f0fdf4;
+      --text-muted: #86efac;
+      --text-dim: #4b6354;
+      --input-bg: rgba(6, 17, 12, 0.85);
+      --danger: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', -apple-system, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(34, 197, 94, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    .container {
+      max-width: 960px;
+      width: 100%;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.25) 0%, rgba(22, 163, 74, 0.15) 100%);
+      border: 1px solid var(--emerald-500);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      box-shadow: 0 0 20px rgba(34, 197, 94, 0.25);
+    }
+
+    .brand h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+    }
+
+    .brand p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(34, 197, 94, 0.12);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      color: var(--emerald-400);
+    }
+
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--emerald-500);
+      box-shadow: 0 0 8px var(--emerald-500);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 840px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      padding: 24px;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 10px 35px rgba(0, 0, 0, 0.45);
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+
+    .card-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+      line-height: 1.4;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: #d1fae5;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type="text"], input[type="email"], select {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(34, 197, 94, 0.25);
+      background: var(--input-bg);
+      color: #ffffff;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    input[type="text"]:focus, input[type="email"]:focus, select:focus {
+      border-color: var(--emerald-500);
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 1px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      border-radius: 10px;
+      transition: all 0.2s;
+    }
+
+    .btn-search {
+      padding: 0 20px;
+      background: var(--emerald-600);
+      color: white;
+      border: none;
+      font-size: 13px;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-search:hover {
+      background: var(--emerald-500);
+      box-shadow: 0 0 15px rgba(34, 197, 94, 0.4);
+    }
+
+    .btn-generate {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+      color: #03200f;
+      border: none;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      border-radius: 12px;
+      margin-top: 10px;
+      box-shadow: 0 4px 20px rgba(34, 197, 94, 0.35);
+    }
+
+    .btn-generate:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 25px rgba(34, 197, 94, 0.5);
+    }
+
+    .user-profile-box {
+      margin-top: 10px;
+      padding: 14px;
+      border-radius: 12px;
+      background: rgba(34, 197, 94, 0.08);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .user-profile-box.active {
+      display: block;
+    }
+
+    .user-profile-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .user-info-main {
+      font-size: 14px;
+      font-weight: 700;
+      color: #f0fdf4;
+    }
+
+    .user-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--emerald-400);
+      border: 1px solid rgba(34, 197, 94, 0.35);
+    }
+
+    .user-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .user-meta strong {
+      color: var(--amber-400);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .alert {
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .alert-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+    }
+
+    /* Results card */
+    .result-display {
+      text-align: center;
+      padding: 30px 20px;
+      border-radius: 14px;
+      background: rgba(6, 17, 12, 0.9);
+      border: 1px dashed rgba(34, 197, 94, 0.35);
+      margin-bottom: 20px;
+    }
+
+    .pin-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 48px;
+      font-weight: 800;
+      letter-spacing: 8px;
+      color: #22c55e;
+      text-shadow: 0 0 25px rgba(34, 197, 94, 0.45);
+      margin: 10px 0;
+    }
+
+    .pin-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .action-btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .btn-secondary {
+      padding: 12px;
+      background: rgba(34, 197, 94, 0.12);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      color: var(--emerald-400);
+      font-size: 13px;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(34, 197, 94, 0.2);
+    }
+
+    .accordion-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 10px 0;
+      padding: 4px 0;
+      cursor: pointer;
+    }
+
+    .accordion-btn:hover {
+      color: #fff;
+    }
+
+    .offline-field {
+      display: none;
+    }
+
+    .offline-field.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">🛡️</div>
+        <div>
+          <h1>FocusGuard Support Admin</h1>
+          <p>Instant Emergency Passcode Generator by Gmail</p>
+        </div>
+      </div>
+      <div class="badge-status">
+        <span class="badge-dot"></span>
+        <span id="firestore-status">Firestore Connected (focusguard-e3791)</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Form Card -->
+      <div class="card">
+        <h2 class="card-title">🔍 Search User by Gmail</h2>
+        <p class="card-subtitle">Enter the user's registered Google account to fetch their device ID automatically.</p>
+
+        <!-- Gmail Lookup -->
+        <div class="form-group">
+          <label for="gmail-input">
+            <span>User Gmail Address</span>
+            <span style="color: var(--emerald-400);">Primary Lookup</span>
+          </label>
+          <div class="input-row">
+            <input type="email" id="gmail-input" placeholder="e.g. user@gmail.com" />
+            <button class="btn-search" id="btn-search-email">
+              Find Device
+            </button>
+          </div>
+
+          <div id="email-error-alert" class="alert alert-error"></div>
+
+          <!-- Found Profile Box -->
+          <div id="user-profile-box" class="user-profile-box">
+            <div class="user-profile-header">
+              <span id="profile-name" class="user-info-main">User</span>
+              <span class="user-badge">✓ Linked & Verified</span>
+            </div>
+            <div class="user-meta">
+              Email: <span id="profile-email">user@gmail.com</span><br>
+              Device ID: <strong id="profile-device-id">FG-XXXX-XXXX</strong><br>
+              Model: <span id="profile-model">Android Device</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Collapsible Offline Fallback -->
+        <button class="accordion-btn" id="toggle-manual-device">
+          ⚙️ Or enter Device ID manually (Offline / No Gmail)
+        </button>
+
+        <div id="manual-device-field" class="form-group offline-field">
+          <label for="manual-device-id">
+            <span>Device ID (Offline Fallback)</span>
+            <span style="color: var(--amber-400);">FG-XXXX-XXXX</span>
+          </label>
+          <input type="text" id="manual-device-id" class="mono" placeholder="FG-8821-4902" />
+        </div>
+
+        <!-- Action Selector -->
+        <div class="form-group">
+          <label for="action-select">
+            <span>Emergency Action</span>
+            <span style="color: var(--emerald-400);">Required</span>
+          </label>
+          <select id="action-select">
+            <option value="101" selected>101 &bull; Disable Uninstall Protection</option>
+            <option value="102">102 &bull; Reset Active Challenge Lock</option>
+            <option value="201">201 &bull; Unblock Specific App</option>
+            <option value="202">202 &bull; Delete Blocked Keyword</option>
+            <option value="203">203 &bull; Disable Shorts & Reels Blocker</option>
+            <option value="301">301 &bull; Reset App Daily Limit</option>
+            <option value="999">999 &bull; Master Emergency Reset (All Protections)</option>
+          </select>
+        </div>
+
+        <!-- Target Payload (conditionally shown) -->
+        <div class="form-group" id="target-payload-group" style="display: none;">
+          <label for="target-payload">
+            <span id="target-payload-label">Target Package / Keyword</span>
+          </label>
+          <input type="text" id="target-payload" placeholder="e.g. com.instagram.android or instagram" />
+        </div>
+
+        <!-- Generate Button -->
+        <button class="btn-generate" id="btn-generate-code">
+          ⚡ GENERATE 6-DIGIT PASSCODE
+        </button>
+      </div>
+
+      <!-- Result Card -->
+      <div class="card">
+        <h2 class="card-title">🔑 Generated Passcode</h2>
+        <p class="card-subtitle">User enters this 6-digit code in their FocusGuard app &rarr; Settings &rarr; Support.</p>
+
+        <div class="result-display">
+          <div class="pin-subtitle">ONE-TIME PASSCODE</div>
+          <div class="pin-code" id="output-pin">------</div>
+          <div class="pin-subtitle" id="pin-details">Awaiting generation...</div>
+        </div>
+
+        <div class="action-btn-row">
+          <button class="btn-secondary" id="btn-copy-pin">📋 Copy PIN</button>
+          <button class="btn-secondary" id="btn-copy-wa">💬 Copy Reply</button>
+        </div>
+
+        <div style="margin-top: 20px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+          <strong>Security Note:</strong> Passcode is mathematically valid for today, yesterday, and tomorrow across UTC and local timezones. Valid only for the selected action on this exact user device.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── FIREBASE CONFIGURATION ──
+    const firebaseConfig = {
+      apiKey: "AIzaSyCkbBFGxLFm0pnn5xxs7nf4muKFIAaG8bs",
+      authDomain: "focusguard-e3791.firebaseapp.com",
+      projectId: "focusguard-e3791",
+      storageBucket: "focusguard-e3791.firebasestorage.app",
+      messagingSenderId: "1039832642648",
+      appId: "1:1039832642648:web:focusguard"
+    };
+
+    let db = null;
+    try {
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.firestore();
+    } catch (e) {
+      console.warn("Firebase initialization notice:", e);
+    }
+
+    const MASTER_SECRET = "FocusGuard#MasterSecret#2026@Key";
+
+    // ── STATE ──
+    let currentDeviceId = "";
+
+    // ── DOM ELEMENTS ──
+    const gmailInput = document.getElementById('gmail-input');
+    const btnSearchEmail = document.getElementById('btn-search-email');
+    const errorAlert = document.getElementById('email-error-alert');
+    const userProfileBox = document.getElementById('user-profile-box');
+    const profileName = document.getElementById('profile-name');
+    const profileEmail = document.getElementById('profile-email');
+    const profileDeviceId = document.getElementById('profile-device-id');
+    const profileModel = document.getElementById('profile-model');
+
+    const toggleManualBtn = document.getElementById('toggle-manual-device');
+    const manualDeviceField = document.getElementById('manual-device-field');
+    const manualDeviceIdInput = document.getElementById('manual-device-id');
+
+    const actionSelect = document.getElementById('action-select');
+    const targetPayloadGroup = document.getElementById('target-payload-group');
+    const targetPayloadLabel = document.getElementById('target-payload-label');
+    const targetPayloadInput = document.getElementById('target-payload');
+
+    const btnGenerate = document.getElementById('btn-generate-code');
+    const outputPin = document.getElementById('output-pin');
+    const pinDetails = document.getElementById('pin-details');
+    const btnCopyPin = document.getElementById('btn-copy-pin');
+    const btnCopyWa = document.getElementById('btn-copy-wa');
+
+    // ── SEARCH BY GMAIL ──
+    async function searchUserByEmail() {
+      const email = gmailInput.value.trim().toLowerCase();
+      if (!email) {
+        showError("Please enter a valid Gmail address.");
+        return;
+      }
+
+      btnSearchEmail.innerText = "Searching...";
+      btnSearchEmail.disabled = true;
+      hideError();
+
+      try {
+        let user = null;
+
+        if (db) {
+          // 1. Direct document in users_by_email
+          const docSnap = await db.collection("users_by_email").doc(email).get();
+          if (docSnap.exists) {
+            user = docSnap.data();
+          } else {
+            // 2. Query users collection
+            const q = await db.collection("users").where("email", "==", email).limit(1).get();
+            if (!q.empty) {
+              user = q.docs[0].data();
+            }
+          }
+        }
+
+        if (user && user.deviceId) {
+          currentDeviceId = user.deviceId;
+          manualDeviceIdInput.value = user.deviceId;
+          profileName.innerText = user.displayName || "FocusGuard User";
+          profileEmail.innerText = user.email || email;
+          profileDeviceId.innerText = user.deviceId;
+          profileModel.innerText = (user.deviceModel || "Android Device") + (user.androidVersion ? " (Android " + user.androidVersion + ")" : "");
+          userProfileBox.classList.add('active');
+        } else {
+          showError("No user registered with " + email + ". Confirm they signed in with Google, or enter Device ID manually below.");
+          userProfileBox.classList.remove('active');
+          manualDeviceField.classList.add('active');
+        }
+      } catch (err) {
+        showError("Search failed: " + err.message);
+        manualDeviceField.classList.add('active');
+      } finally {
+        btnSearchEmail.innerText = "Find Device";
+        btnSearchEmail.disabled = false;
+      }
+    }
+
+    btnSearchEmail.addEventListener('click', searchUserByEmail);
+    gmailInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        searchUserByEmail();
+      }
+    });
+
+    // ── TOGGLE MANUAL DEVICE ID ──
+    toggleManualBtn.addEventListener('click', () => {
+      manualDeviceField.classList.toggle('active');
+    });
+
+    manualDeviceIdInput.addEventListener('input', (e) => {
+      currentDeviceId = e.target.value.trim().toUpperCase();
+    });
+
+    // ── ACTION CHANGE HANDLER ──
+    actionSelect.addEventListener('change', (e) => {
+      const val = e.target.value;
+      if (val === "201" || val === "301") {
+        targetPayloadGroup.style.display = "block";
+        targetPayloadLabel.innerText = "Target App Package Name";
+        targetPayloadInput.placeholder = "e.g. com.instagram.android";
+      } else if (val === "202") {
+        targetPayloadGroup.style.display = "block";
+        targetPayloadLabel.innerText = "Target Blocked Keyword / Domain";
+        targetPayloadInput.placeholder = "e.g. reddit.com or gambling";
+      } else if (val === "203") {
+        targetPayloadGroup.style.display = "block";
+        targetPayloadLabel.innerText = "Feed Platform (instagram, youtube, facebook, all)";
+        targetPayloadInput.placeholder = "instagram, youtube, facebook, or all";
+        if (!targetPayloadInput.value) targetPayloadInput.value = "all";
+      } else {
+        targetPayloadGroup.style.display = "none";
+        targetPayloadInput.value = "";
+      }
+    });
+
+    // ── HMAC CODE GENERATION (Matches SupportCodeEngine.kt) ──
+    function calculatePasscode(deviceId, dateStr, actionCode, targetPayload) {
+      const normDevice = deviceId.trim().toUpperCase();
+      const normDate = dateStr.trim();
+      const normAction = actionCode.trim();
+      const normTarget = (targetPayload || "").trim().toLowerCase();
+
+      const rawPayload = `${normDevice}|${normDate}|${normAction}|${normTarget}`;
+      const hashHex = CryptoJS.HmacSHA256(rawPayload, MASTER_SECRET).toString(CryptoJS.enc.Hex);
+
+      const first8 = hashHex.substring(0, 8);
+      const intVal = parseInt(first8, 16) & 0x7fffffff;
+      const pinNum = (intVal % 900000) + 100000;
+      return String(pinNum);
+    }
+
+    function getTodayString() {
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    btnGenerate.addEventListener('click', () => {
+      const devId = currentDeviceId || manualDeviceIdInput.value.trim().toUpperCase();
+      if (!devId) {
+        showError("Device ID required. Search user by Gmail or enter Device ID manually.");
+        return;
+      }
+
+      const action = actionSelect.value;
+      const target = targetPayloadInput.value.trim();
+      const today = getTodayString();
+
+      const code = calculatePasscode(devId, today, action, target);
+
+      outputPin.innerText = code;
+      pinDetails.innerText = `Valid today for Device ${devId} (Action: ${actionSelect.options[actionSelect.selectedIndex].text})`;
+
+      // Celebration confetti
+      try {
+        confetti({
+          particleCount: 40,
+          spread: 50,
+          origin: { y: 0.8 },
+          colors: ['#22C55E', '#16A34A', '#4ADE80', '#FBBF24']
+        });
+      } catch (e) {}
+    });
+
+    // Copy buttons
+    btnCopyPin.addEventListener('click', () => {
+      const pin = outputPin.innerText;
+      if (pin && pin !== '------') {
+        navigator.clipboard.writeText(pin);
+        btnCopyPin.innerText = "✓ Copied!";
+        setTimeout(() => { btnCopyPin.innerText = "📋 Copy PIN"; }, 2000);
+      }
+    });
+
+    btnCopyWa.addEventListener('click', () => {
+      const pin = outputPin.innerText;
+      if (pin && pin !== '------') {
+        const msg = `Namaste! Aapka FocusGuard Emergency Support Code yeh raha: *${pin}*\n\nApne phone me FocusGuard app kholein -> Settings -> Support Secret Code par tap karein aur yeh 6-digit PIN enter karein.\n\nYeh code aaj ke din ke liye valid hai.`;
+        navigator.clipboard.writeText(msg);
+        btnCopyWa.innerText = "✓ Copied Reply!";
+        setTimeout(() => { btnCopyWa.innerText = "💬 Copy Reply"; }, 2000);
+      }
+    });
+
+    function showError(msg) {
+      errorAlert.innerText = msg;
+      errorAlert.style.display = 'block';
+    }
+
+    function hideError() {
+      errorAlert.style.display = 'none';
+    }
+  </script>
+</body>
+</html>

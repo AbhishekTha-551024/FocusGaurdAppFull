@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- FocusGuard shield icon — simplified vector for launcher -->
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M54,20 L78,30 L78,52 C78,65 66,74 54,78 C42,74 30,65 30,52 L30,30 Z" />
+    <path
+        android:fillColor="#0B0F1A"
+        android:pathData="M44,50 L50,56 L64,42"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

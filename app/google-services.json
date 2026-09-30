@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "1039832642648",
+    "project_id": "focusguard-e3791",
+    "storage_bucket": "focusguard-e3791.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1039832642648:android:1850762efefd5bd540862d",
+        "android_client_info": {
+          "package_name": "com.focusguard.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1039832642648-b41p7ounut5cpa2h2fj8goib0uu3llp8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkbBFGxLFm0pnn5xxs7nf4muKFIAaG8bs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1039832642648-b41p7ounut5cpa2h2fj8goib0uu3llp8.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1039832642648:android:1850762efefd5bd540862d",
+        "android_client_info": {
+          "package_name": "com.focusguard.app.debug"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1039832642648-b41p7ounut5cpa2h2fj8goib0uu3llp8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkbBFGxLFm0pnn5xxs7nf4muKFIAaG8bs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1039832642648-b41p7ounut5cpa2h2fj8goib0uu3llp8.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

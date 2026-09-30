@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Device Admin Policies for FocusGuard
+    =====================================
+    Only policies actually used are declared here. Speculative policies
+    are intentionally excluded.
+
+    DECISION POINT — force-lock / lockNow():
+      If we decide to call lockNow() as an additional response to a detected
+      uninstall attempt (belt-and-suspenders alongside the overlay), we must
+      add <uses-policies><force-lock/></uses-policies> here. This changes
+      what the user sees in the Device Admin activation dialog. Excluded
+      until that decision is made.
+
+    NOTE — setUninstallBlocked():
+      This is a Device Owner API only. It is NOT available to a regular
+      Device Admin (which is what we are — no Device Owner mode on Play Store).
+      Do NOT call it. The FocusGuardDeviceAdminReceiver guards against this.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <!--
+            watch-login: required to monitor failed lock-screen attempts.
+            Retained for future heartbeat/accountability features.
+            It is the least-intrusive policy and does not alarm users.
+        -->
+        <watch-login />
+    </uses-policies>
+</device-admin>

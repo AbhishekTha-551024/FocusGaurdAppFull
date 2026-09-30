@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">FocusGuard</string>
+    <string name="accessibility_service_label">FocusGuard Screen Protection</string>
+    <string name="accessibility_service_description">FocusGuard monitors for attempts to uninstall or disable the app and shows a PIN gate to prevent unauthorized removal. It does not collect or transmit personal data.</string>
+</resources>

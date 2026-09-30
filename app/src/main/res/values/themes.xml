@@ -1,0 +1,16 @@
+<resources>
+    <!-- Base application theme. The actual visual theme is applied via Compose Material3. -->
+    <style name="Theme.FocusGuard" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+    </style>
+
+    <!-- Splash Screen theme using Android 12+ / AndroidX SplashScreen API -->
+    <style name="Theme.FocusGuard.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.FocusGuard</item>
+    </style>
+</resources>
+

@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ================================================================
+         PERMISSIONS
+         ================================================================ -->
+
+    <!-- Usage Access permission required for Screen Time tracking & Daily Limits -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Foreground service permissions (required Android 9+ & Android 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Required to query installed packages for detection logic (API 30+) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Receive boot completed to re-arm the service after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Notification permission for Protection alerts (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Request ignore battery optimization for background survival -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Kill background processes of blocked apps to prevent Picture-in-Picture bypass -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+
+    <!-- Haptic feedback for instantaneous tactile block confirmation -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+        Display Over Other Apps (SYSTEM_ALERT_WINDOW)
+        =============================================
+        FocusGuard's block overlay uses TYPE_ACCESSIBILITY_OVERLAY (does not require this),
+        but this declaration is REQUIRED so that:
+         1. FocusGuard appears in "Display over other apps" settings list on all OEMs
+            (Vivo/ColorOS, MIUI, Samsung — without it the app is invisible in that list)
+         2. AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW can be queried to verify actual grant state
+         3. The system treats overlay-over-apps intents correctly on Android 10+
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+        WRITE_SECURE_SETTINGS
+        Allows instant, programmatic zero-interaction re-enabling of Accessibility Service
+        on reboot when granted via ADB, Shizuku, or Device Owner.
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Wake lock to ensure boot receiver can complete recovery before CPU sleeps -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".FocusGuardApplication"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.FocusGuard">
+
+        <!-- ============================================================
+             MAIN ENTRY POINT — Onboarding
+             ============================================================ -->
+        <activity
+            android:name=".ui.onboarding.OnboardingActivity"
+            android:exported="true"
+            android:theme="@style/Theme.FocusGuard.Splash"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ============================================================
+             DEEP FOCUS LOCKDOWN FULL-SCREEN ACTIVITY
+             ============================================================ -->
+        <activity
+            android:name=".ui.session.SessionLockActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.FocusGuard"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true" />
+
+        <!-- ============================================================
+             ACCESSIBILITY RECOVERY FULL-SCREEN SHIELD ACTIVITY
+             ============================================================ -->
+        <activity
+            android:name=".ui.recovery.AccessibilityRecoveryActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.FocusGuard"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true" />
+
+        <!-- ============================================================
+             ACCESSIBILITY SERVICE
+             ============================================================ -->
+        <service
+            android:name=".service.FocusGuardAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ============================================================
+             STICKY FOREGROUND WATCHDOG SERVICE
+             ============================================================ -->
+        <service
+            android:name=".service.ProtectionWatchdogService"
+            android:exported="false"
+            android:enabled="false" />
+
+        <!-- ============================================================
+             DEEP FOCUS LOCKDOWN SESSION SERVICE
+             ============================================================ -->
+        <service
+            android:name=".service.FocusSessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Deep focus session countdown and lock management" />
+        </service>
+
+        <!-- ============================================================
+             DEVICE ADMIN RECEIVER
+             ============================================================ -->
+        <receiver
+            android:name=".receiver.FocusGuardDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_policies" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============================================================
+             NEW APP INSTALL RECEIVER (Auto-Block Newly Installed Apps)
+             ============================================================ -->
+        <receiver
+            android:name=".receiver.NewAppInstallReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============================================================
+             BOOT RECEIVER (Re-arm Protection on Device Boot / Unlock / App Update)
+             ============================================================ -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============================================================
+             PACKAGE REMOVED RECEIVER (Anti-Clone-Uninstall Defense)
+             Fires when com.focusguard.app is removed or changed —
+             detects OEM Dual App clone removal which can disable the
+             primary user's Accessibility Service on some OEMs.
+             ============================================================ -->
+        <receiver
+            android:name=".receiver.PackageRemovedReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_REMOVED" />
+                <action android:name="android.intent.action.PACKAGE_CHANGED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>
