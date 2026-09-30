@@ -19,7 +19,7 @@ import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,9 +45,13 @@ import com.focusguard.app.utils.BatteryOptimizationHelper
 fun MissingPermissionsCard(
     uiState: HomeUiState,
     onOpenAccessibilityDisclosure: () -> Unit,
+    onOpenOemProtectionDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isProblematicOem = remember { BatteryOptimizationHelper.isProblematicOem() }
+    val oemShortName = remember { BatteryOptimizationHelper.getOemShortName() }
+    val oemActionSummary = remember { BatteryOptimizationHelper.getOemActionSummary() }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -125,21 +129,25 @@ fun MissingPermissionsCard(
             )
         }
 
-        // ── 3. BATTERY RESTRICTION (YELLOW/AMBER) ──
+        // ── 3. OEM AUTO-START & BATTERY RESTRICTION SHIELD ──
+        val isOemShieldNeeded = if (isProblematicOem) {
+            !uiState.isBatteryOptimizationIgnored || !uiState.permissionStatus.isOemSetupCompleted
+        } else {
+            !uiState.isBatteryOptimizationIgnored && !uiState.permissionStatus.isBatteryOptimizationIgnored
+        }
+
         AnimatedVisibility(
-            visible = !uiState.isBatteryOptimizationIgnored && !uiState.permissionStatus.isBatteryOptimizationIgnored,
+            visible = isOemShieldNeeded,
             enter = expandVertically(tween(250)) + fadeIn(tween(250)),
             exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
         ) {
             SmallPermissionAlertCard(
                 icon = Icons.Default.BatteryAlert,
-                accentColor = Color(0xFFEAB308),
-                title = "Battery Saver Restricting App",
-                subtitle = "App may be stopped in background",
-                buttonText = "Fix",
-                onClick = {
-                    BatteryOptimizationHelper.requestBatteryOptimizationExemption(context)
-                }
+                accentColor = Color(0xFFF59E0B),
+                title = if (isProblematicOem) "$oemShortName Background Shield" else "Battery Saver Restricting App",
+                subtitle = if (isProblematicOem) oemActionSummary else "App may be stopped in background",
+                buttonText = if (isProblematicOem) "Protect" else "Fix",
+                onClick = onOpenOemProtectionDialog
             )
         }
     }

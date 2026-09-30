@@ -153,6 +153,7 @@ fun HomeScreen(
     }
 
     var isAddChallengeDialogOpen by remember { mutableStateOf(false) }
+    var showOemProtectionDialog by remember { mutableStateOf(false) }
 
     var currentTimeMs by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(settingsUiState.isUninstallProtectionEnabled, settingsUiState.uninstallProtectionExpiryTimestamp) {
@@ -289,7 +290,8 @@ fun HomeScreen(
             // ── REQUIRED PERMISSIONS ALERT BANNER ───────────────────────
             MissingPermissionsCard(
                 uiState = uiState,
-                onOpenAccessibilityDisclosure = { showAccessibilityDisclosure = true }
+                onOpenAccessibilityDisclosure = { showAccessibilityDisclosure = true },
+                onOpenOemProtectionDialog = { showOemProtectionDialog = true }
             )
 
             // ── 0. DISTRACTION FEED CONTROL (YouTube Shorts, Instagram Reels, Facebook Reels) ──
@@ -927,15 +929,21 @@ fun HomeScreen(
                                 }
                             } catch (_: Exception) {}
                         }
-                        Capability.BATTERY_OPTIMIZATION -> {
-                            BatteryOptimizationHelper.requestBatteryOptimizationExemption(context)
-                        }
-                        Capability.OEM_BACKGROUND -> {
-                            onNavigateToOemGuidance()
+                        Capability.BATTERY_OPTIMIZATION, Capability.OEM_BACKGROUND -> {
+                            showOemProtectionDialog = true
                         }
                     }
                 },
                 onDismiss = { explainingCapability = null }
+            )
+        }
+
+        if (showOemProtectionDialog) {
+            com.focusguard.app.ui.protection.OemProtectionDialog(
+                onDismiss = { showOemProtectionDialog = false },
+                onAcknowledge = {
+                    onRefreshPermissions()
+                }
             )
         }
     }

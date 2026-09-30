@@ -32,7 +32,7 @@ data class HomeUiState(
     val todayImpulsesBlockedCount: Int = 0
 ) {
     val hasMissingRequiredPermissions: Boolean
-        get() = !isAccessibilityEnabled || !isBatteryOptimizationIgnored || !isOverlayGranted
+        get() = !isAccessibilityEnabled || !isBatteryOptimizationIgnored || !isOverlayGranted || (!permissionStatus.isOemSetupCompleted && com.focusguard.app.utils.BatteryOptimizationHelper.isProblematicOem())
 }
 
 @HiltViewModel

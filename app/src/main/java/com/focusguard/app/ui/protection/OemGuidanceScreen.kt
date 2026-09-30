@@ -32,6 +32,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focusguard.app.ui.theme.FocusGuardTheme
+import com.focusguard.app.utils.BatteryOptimizationHelper
+import com.focusguard.app.utils.OemBrand
 
 private val Navy900 = Color(0xFF07140D)
 private val Navy800 = Color(0xFF0E2419)
@@ -43,34 +45,13 @@ private val White90 = Color(0xE6FFFFFF)
 private val White60 = Color(0x99FFFFFF)
 private val White40 = Color(0x66FFFFFF)
 
-enum class OemBrand {
-    XIAOMI,
-    OPPO_REALME,
-    VIVO,
-    SAMSUNG,
-    ONEPLUS,
-    HUAWEI,
-    GENERIC
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OemGuidanceScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val manufacturer = Build.MANUFACTURER.lowercase()
-    val brand = remember(manufacturer) {
-        when {
-            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") -> OemBrand.XIAOMI
-            manufacturer.contains("oppo") || manufacturer.contains("realme") -> OemBrand.OPPO_REALME
-            manufacturer.contains("vivo") || manufacturer.contains("iqoo") -> OemBrand.VIVO
-            manufacturer.contains("samsung") -> OemBrand.SAMSUNG
-            manufacturer.contains("oneplus") -> OemBrand.ONEPLUS
-            manufacturer.contains("huawei") || manufacturer.contains("honor") -> OemBrand.HUAWEI
-            else -> OemBrand.GENERIC
-        }
-    }
+    val brand = remember { BatteryOptimizationHelper.getOemBrand() }
 
     var isBatteryOptimizationIgnored by remember {
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager

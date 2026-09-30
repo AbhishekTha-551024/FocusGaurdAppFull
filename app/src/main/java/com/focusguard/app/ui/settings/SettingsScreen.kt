@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import com.focusguard.app.utils.BatteryOptimizationHelper
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -233,6 +234,74 @@ fun SettingsScreen(
                                 Text(
                                     text = "Device ID: ${uiState.deviceId} • Tap to enter 6-digit offline code",
                                     color = Emerald400,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
+
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = White40,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    // ── 2.5 OEM AUTO-START & BACKGROUND SHIELD ──
+                    Text(
+                        text = "BACKGROUND & BATTERY SHIELD",
+                        color = White40,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+
+                    val oemShortName = remember { BatteryOptimizationHelper.getOemShortName() }
+                    val oemHeadline = remember { BatteryOptimizationHelper.getOemDialogHeadline() }
+                    val isProblematic = remember { BatteryOptimizationHelper.isProblematicOem() }
+
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = Navy800),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigateToOemGuidance() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(18.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFF59E0B).copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.BatteryChargingFull,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFBBF24),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "$oemShortName Auto-Start & Background Shield",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = if (isProblematic) oemHeadline else "Unrestricted battery setup • Tap for 1-click guide",
+                                    color = Color(0xFFFBBF24),
                                     fontSize = 12.sp,
                                     lineHeight = 16.sp
                                 )
