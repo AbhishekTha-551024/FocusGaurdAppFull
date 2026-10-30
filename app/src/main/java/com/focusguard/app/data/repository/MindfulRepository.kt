@@ -2,9 +2,9 @@ package com.focusguard.app.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.focusguard.app.data.db.MindfulAppEntity
-import com.focusguard.app.data.db.MindfulDao
-import com.focusguard.app.data.db.MindfulIntentLogEntity
+import com.focusguard.app.core.database.dao.MindfulDao
+import com.focusguard.app.core.database.entity.MindfulAppEntity
+import com.focusguard.app.core.database.entity.MindfulIntentLogEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

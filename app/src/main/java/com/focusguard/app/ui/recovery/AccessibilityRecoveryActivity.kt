@@ -36,6 +36,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import com.focusguard.app.recovery.AccessibilityRecoveryHelper
 import com.focusguard.app.ui.theme.*
 import com.focusguard.app.utils.BatteryOptimizationHelper
@@ -61,6 +67,10 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
         private const val EXTRA_REASON = "extra_reason"
 
         fun start(context: Context, reason: String = "") {
+            if (!AccessibilityRecoveryHelper.isProtectionActive(context)) {
+                android.util.Log.i("AccessibilityRecovery", "Protection is inactive, skipping start of AccessibilityRecoveryActivity")
+                return
+            }
             try {
                 val intent = Intent(context, AccessibilityRecoveryActivity::class.java).apply {
                     putExtra(EXTRA_REASON, reason)
@@ -99,13 +109,60 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
     lateinit var repository: com.focusguard.app.data.repository.FocusGuardRepository
 
     private var hasNavigatedToSettings = false
+    private var settingsGuardJob: Job? = null
+
+    private fun startSettingsGuard() {
+        if (settingsGuardJob?.isActive == true) return
+        settingsGuardJob = lifecycleScope.launch(Dispatchers.IO) {
+            val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+            val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
+            val isAdminBlock = reason.contains("Admin", ignoreCase = true)
+            while (isActive && (isAdminBlock || !AccessibilityRecoveryHelper.isAccessibilityActive(this@AccessibilityRecoveryActivity))) {
+                delay(100L)
+                val now = System.currentTimeMillis()
+                val events = usm?.queryEvents(now - 2000L, now)
+                var topPkg: String? = null
+                var topClass: String? = null
+                if (events != null) {
+                    val event = android.app.usage.UsageEvents.Event()
+                    while (events.hasNextEvent()) {
+                        events.getNextEvent(event)
+                        if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
+                            topPkg = event.packageName
+                            topClass = event.className
+                        }
+                    }
+                }
+                val isDangerous = topPkg == "com.android.settings" ||
+                        topPkg == "com.google.android.packageinstaller" ||
+                        topPkg == "com.android.packageinstaller" ||
+                        topPkg == "com.vivo.doubleinstance" ||
+                        topPkg == "com.vivo.abe"
+                if (isDangerous) {
+                    val isA11yScreen = topClass?.contains("Accessibility", ignoreCase = true) == true
+                    if (!isA11yScreen && topClass != null) {
+                        android.util.Log.w("AccessibilityRecovery", "Tamper attempt detected in $topPkg ($topClass)! Pulling recovery shield back to front.")
+                        val intent = Intent(this@AccessibilityRecoveryActivity, AccessibilityRecoveryActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                        }
+                        startActivity(intent)
+                    }
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!repository.isFastUninstallProtectionEnabled()) {
+        val isProtected = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(this) &&
+                repository.isFastUninstallProtectionEnabled()
+        val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
+        val isAdminBlock = reason.contains("Admin", ignoreCase = true)
+        if (!isProtected || (!isAdminBlock && AccessibilityRecoveryHelper.isAccessibilityActive(this))) {
             finish()
             return
         }
+        startSettingsGuard()
         enableEdgeToEdge()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -150,287 +207,18 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!repository.isFastUninstallProtectionEnabled()) {
+        val isProtected = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(this) &&
+                repository.isFastUninstallProtectionEnabled()
+        if (!isProtected) {
             finish()
             return
         }
-        // If the user turned Accessibility ON, immediately finish and confirm
-        if (AccessibilityRecoveryHelper.isAccessibilityActive(this)) {
+        val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
+        val isAdminBlock = reason.contains("Admin", ignoreCase = true)
+        // If the user turned Accessibility ON and not in Admin Block mode, finish and confirm
+        if (!isAdminBlock && AccessibilityRecoveryHelper.isAccessibilityActive(this)) {
             Toast.makeText(this, "🛡️ FocusGuard Protection Restored!", Toast.LENGTH_LONG).show()
             finish()
         }
-    }
-}
-
-@Composable
-private fun AccessibilityRecoveryScreen(
-    onRestoreClick: () -> Unit,
-    onOemFixClick: () -> Unit
-) {
-    val scrollState = rememberScrollState()
-    val isVivoOrProblematic = remember { BatteryOptimizationHelper.isProblematicOem() }
-    val oemName = remember { BatteryOptimizationHelper.getOemDisplayName() }
-
-    // Pulsing animation for the warning glow
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Forest950,
-                        Forest900,
-                        Color(0xFF041009)
-                    )
-                )
-            )
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Warning Icon with animated halo
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(100.dp)
-                    .scale(pulseScale)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(90.dp)
-                        .clip(CircleShape)
-                        .background(Rose400.copy(alpha = 0.15f))
-                )
-                Box(
-                    modifier = Modifier
-                        .size(70.dp)
-                        .clip(CircleShape)
-                        .background(Rose400.copy(alpha = 0.25f))
-                        .border(2.dp, Rose400.copy(alpha = 0.5f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = "Protection Warning",
-                        tint = Rose400,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Urgent Status Badge
-            Surface(
-                color = Rose400.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(20.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Rose400.copy(alpha = 0.4f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(Rose400)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "PROTECTION PAUSED BY RESTART",
-                        color = Rose400,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Title & Subtitle
-            Text(
-                text = "Turn On Accessibility",
-                color = White90,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.ExtraBold,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Your phone turned off Accessibility during device restart. To protect your blocked apps and maintain your uninstall shield, Accessibility must be restored.",
-                color = White60,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 12.dp)
-            )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            // Primary 1-Tap CTA Button
-            Button(
-                onClick = onRestoreClick,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(58.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Emerald500,
-                    contentColor = Forest950
-                ),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "RESTORE ACCESSIBILITY (1 TAP)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        letterSpacing = 0.5.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Step Instructions Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Forest800),
-                border = androidx.compose.foundation.BorderStroke(1.dp, ForestBorder)
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text(
-                        text = "Quick 3-Step Setup",
-                        color = Emerald400,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    InstructionRow(number = "1", text = "Tap 'FocusGuard' in the Accessibility list")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    InstructionRow(number = "2", text = "Turn ON the 'Use FocusGuard' toggle")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    InstructionRow(number = "3", text = "Tap 'Allow' on the system confirmation prompt")
-                }
-            }
-
-            // OEM Restart Fix Card (Vivo / iQOO / Xiaomi / Oppo)
-            if (isVivoOrProblematic) {
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Forest700.copy(alpha = 0.6f)),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Amber400.copy(alpha = 0.3f))
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = null,
-                                tint = Amber400,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Keep On After Restart ($oemName)",
-                                color = Amber400,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "To prevent $oemName from disabling Accessibility whenever you restart or power off the phone, allow 'High background power consumption' & 'Autostart'.",
-                            color = White60,
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedButton(
-                            onClick = onOemFixClick,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber300),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Amber400.copy(alpha = 0.6f))
-                        ) {
-                            Text(
-                                text = "Open $oemName Background Settings",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-private fun InstructionRow(number: String, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .clip(CircleShape)
-                .background(Emerald500.copy(alpha = 0.2f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = number,
-                color = Emerald400,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(
-            text = text,
-            color = White90,
-            fontSize = 13.sp,
-            lineHeight = 18.sp
-        )
     }
 }

@@ -3,14 +3,17 @@ package com.focusguard.app.data.repository
 import android.content.Context
 import android.util.Log
 import com.focusguard.app.blockers.TimeTamperGuard
-import com.focusguard.app.data.datastore.FocusGuardPreferences
-import com.focusguard.app.data.db.*
+import com.focusguard.app.core.datastore.FocusGuardPreferences
+import com.focusguard.app.core.database.dao.*
+import com.focusguard.app.core.database.entity.*
+import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.security.SupportCodeEngine
 import com.focusguard.app.security.SupportVerificationResult
 import com.focusguard.app.usage.LimitStatus
 import com.focusguard.app.usage.ScheduleBlockResult
 import com.focusguard.app.usage.ScheduleEvaluator
 import com.focusguard.app.usage.TimeLimitEvaluator
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,12 +50,16 @@ class FocusGuardRepository @Inject constructor(
     private val appTimeLimitDao: AppTimeLimitDao,
     private val scheduleDao: ScheduleDao,
     private val pendingChangeDao: PendingChangeDao,
+    private val mindfulDao: MindfulDao,
     private val timeLimitEvaluator: TimeLimitEvaluator,
     private val scheduleEvaluator: ScheduleEvaluator,
     private val supportCodeEngine: SupportCodeEngine
 ) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val repoExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Repository scope uncaught exception: ${throwable.message}", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + repoExceptionHandler)
     
     // In-memory zero-latency fast lookup caches (< 0.01 ms)
     private val cachedActiveSchedules = CopyOnWriteArrayList<ScheduleEntity>()
@@ -60,6 +67,10 @@ class FocusGuardRepository @Inject constructor(
     private val cachedBlockedKeywords = ConcurrentHashMap.newKeySet<String>()
     private val cachedTimeLimits = ConcurrentHashMap<String, AppTimeLimitEntity>()
     private val cachedExceededTimeLimits = ConcurrentHashMap.newKeySet<String>()
+    // Date-aware tracker storing (YEAR * 1000 + DAY_OF_YEAR) to automatically flush midnight rollovers safely
+    private val cachedExceededDateCode = java.util.concurrent.atomic.AtomicInteger(
+        java.util.Calendar.getInstance().let { it.get(java.util.Calendar.YEAR) * 1000 + it.get(java.util.Calendar.DAY_OF_YEAR) }
+    )
     private val cachedOnboardingComplete = AtomicBoolean(false)
     // STARTUP RACE FIX: Initialize with synchronous prefs cache (`prefs.syncUninstallProtectionEnabled`)
     // so on cold boot / device reboot, isFastUninstallProtectionEnabled() immediately returns the real state
@@ -109,6 +120,19 @@ class FocusGuardRepository @Inject constructor(
                 cachedBlockedPackages.addAll(list.map { it.packageName.lowercase() })
                 prefs.updateSyncCounts(apps = list.size)
                 Log.d(TAG, "Synchronized blocked apps cache: ${list.size} apps")
+
+                // Mirror to Device Protected Storage for Direct Boot accessibility initialization
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    try {
+                        val deContext = context.createDeviceProtectedStorageContext()
+                        deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE)
+                            .edit()
+                            .putStringSet("blocked_packages", list.map { it.packageName.lowercase() }.toSet())
+                            .apply()
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Failed to cache blocked packages in DE: ${e.message}")
+                    }
+                }
             }
         }
 
@@ -155,6 +179,36 @@ class FocusGuardRepository @Inject constructor(
                 cachedTimedLockDays.set(days)
             }
         }
+
+        // 6b. Startup cleanup: if protection is enabled but has no valid days/expiry (corrupt old
+        //     state), silently disable it.  GUARD: only when user is unlocked (CE storage readable)
+        //     and only after DataStore has emitted real values (combine first-emission).  Never runs
+        //     during Direct Boot or if DataStore read fails, because the flows would simply not emit.
+        scope.launch {
+            try {
+                val userManager = context.getSystemService(android.os.UserManager::class.java)
+                if (userManager == null || !userManager.isUserUnlocked) {
+                    Log.d(TAG, "Startup cleanup skipped: device not yet unlocked")
+                    return@launch
+                }
+                // Wait for all three DataStore streams to emit their first real value
+                val enabled = prefs.isUninstallProtectionEnabled.first()
+                val expiry  = prefs.uninstallProtectionExpiryTimestamp.first()
+                val days    = prefs.uninstallProtectionDays.first()
+                if (enabled && (days < 1 || expiry <= 0L)) {
+                    Log.w(TAG, "Startup cleanup: corrupt uninstall protection state " +
+                        "(enabled=true, days=$days, expiry=$expiry) — disabling protection flag only")
+                    prefs.setUninstallProtectionEnabled(false)
+                    cachedUninstallProtection.set(false)
+                    cachedTimedLockExpiry.set(0L)
+                    cachedTimedLockDays.set(0)
+                    sendRefreshCachesBroadcast()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Startup cleanup: DataStore read failed, skipping", e)
+            }
+        }
+
         scope.launch {
             // DATA LOSS FIX: Only clean up already applied or cancelled changes on startup.
             // PENDING changes (e.g. 24h delay challenge) must survive app restarts and reboots.
@@ -277,7 +331,9 @@ class FocusGuardRepository @Inject constructor(
                             scope.launch {
                                 try {
                                     blockedKeywordDao.insert(item.copy(keyword = clean))
-                                } catch (_: Throwable) {}
+                                } catch (t: Throwable) {
+                                    Log.d(TAG, "Failed to persist sanitized keyword: ${t.message}")
+                                }
                             }
                         }
                     }
@@ -339,8 +395,23 @@ class FocusGuardRepository @Inject constructor(
 
     fun hasFastTimeLimit(packageName: String): Boolean = cachedTimeLimits.containsKey(packageName.lowercase())
 
-    fun isFastTimeLimitExceeded(packageName: String): Boolean =
-        cachedExceededTimeLimits.contains(packageName.lowercase())
+    private fun getTodayDateCode(): Int {
+        val cal = java.util.Calendar.getInstance()
+        return cal.get(java.util.Calendar.YEAR) * 1000 + cal.get(java.util.Calendar.DAY_OF_YEAR)
+    }
+
+    fun isFastTimeLimitExceeded(packageName: String): Boolean {
+        val todayCode = getTodayDateCode()
+        if (cachedExceededDateCode.get() != todayCode) {
+            // Thread-safe atomic compare-and-set: only one thread executes clear and refresh
+            if (cachedExceededDateCode.getAndSet(todayCode) != todayCode) {
+                cachedExceededTimeLimits.clear()
+                refreshExceededTimeLimits()
+            }
+            return false
+        }
+        return cachedExceededTimeLimits.contains(packageName.lowercase())
+    }
 
     fun markTimeLimitExceeded(packageName: String) {
         cachedExceededTimeLimits.add(packageName.lowercase())
@@ -365,14 +436,17 @@ class FocusGuardRepository @Inject constructor(
     }
 
     fun isFastUninstallProtectionEnabled(): Boolean {
-        if (!cachedUninstallProtection.get()) return false
-        val expiry = cachedTimedLockExpiry.get()
-        if (expiry <= 0L) return true // Indefinite protection if enabled without expiry
         // AGENTS Rule 9 & Security Fix #5: Check monotonic hardware clock to prevent rollback bypass
         if (TimeTamperGuard.isTampered() || TimeTamperGuard.checkAndValidateTime()) {
-            return true // Lock remains unconditionally active if clock manipulation is detected
+            // Clock tamper detected: keep lock unconditionally if protection was enabled at all
+            return cachedUninstallProtection.get() && cachedTimedLockDays.get() >= 1
         }
-        return System.currentTimeMillis() < expiry
+        return isProtectionReallyActive(
+            enabled = cachedUninstallProtection.get(),
+            days    = cachedTimedLockDays.get(),
+            expiry  = cachedTimedLockExpiry.get(),
+            now     = System.currentTimeMillis()
+        )
     }
 
     /**
@@ -385,10 +459,14 @@ class FocusGuardRepository @Inject constructor(
             try {
                 val canonical = prefs.isUninstallProtectionEnabled.first()
                 cachedUninstallProtection.set(canonical)
+                cachedTimedLockExpiry.set(prefs.syncUninstallProtectionExpiry)
+                cachedTimedLockDays.set(prefs.syncUninstallProtectionDays)
                 Log.d(TAG, "refreshUninstallProtectionNow: synced from DataStore -> $canonical")
             } catch (e: Exception) {
-                Log.e(TAG, "refreshUninstallProtectionNow: DataStore read failed, defaulting to OFF", e)
-                cachedUninstallProtection.set(false)
+                Log.e(TAG, "refreshUninstallProtectionNow: DataStore read failed, falling back to sync/DE cache", e)
+                cachedUninstallProtection.set(prefs.syncUninstallProtectionEnabled)
+                cachedTimedLockExpiry.set(prefs.syncUninstallProtectionExpiry)
+                cachedTimedLockDays.set(prefs.syncUninstallProtectionDays)
             }
         }
     }
@@ -454,6 +532,7 @@ class FocusGuardRepository @Inject constructor(
         if (!enabled) {
             cachedTimedLockExpiry.set(0L)
             cachedTimedLockDays.set(0)
+            com.focusguard.app.worker.AccessibilityHealthWorker.cancelReactivationNotification(context)
         }
         // FIX 4: Notify :blocker_service process immediately so its AtomicBoolean cache
         // reflects the new state without waiting for DataStore Flow propagation (~30s lag).
@@ -583,6 +662,11 @@ class FocusGuardRepository @Inject constructor(
     suspend fun applyPendingChange(pendingChange: PendingChangeEntity) {
         try {
             when (pendingChange.changeType) {
+                ChangeType.UNKNOWN -> {
+                    Log.w(TAG, "Unknown or corrupted pending change discarded (id=${pendingChange.id})")
+                    pendingChangeDao.deleteById(pendingChange.id)
+                    return
+                }
                 ChangeType.UNBLOCK_APP -> {
                     unblockApp(pendingChange.targetId)
                 }
@@ -604,7 +688,7 @@ class FocusGuardRepository @Inject constructor(
                     removeTimeLimit(pendingChange.targetId)
                 }
                 ChangeType.LOWER_LIMIT -> {
-                    val limit = pendingChange.targetPayload?.toIntOrNull() ?: 60
+                    val limit = (pendingChange.targetPayload?.toIntOrNull() ?: 60).coerceIn(1, 1440)
                     setTimeLimit(pendingChange.targetId, pendingChange.targetName, limit, true)
                 }
                 ChangeType.CHANGE_CHALLENGE_TYPE -> {
@@ -634,7 +718,7 @@ class FocusGuardRepository @Inject constructor(
                     logEvent(EventType.APP_UNBLOCKED, "Distraction feed control disabled via challenge approval: ${pendingChange.targetId}")
                 }
                 ChangeType.LOWER_COUNTDOWN -> {
-                    val newSeconds = pendingChange.targetPayload?.toIntOrNull() ?: 5
+                    val newSeconds = (pendingChange.targetPayload?.toIntOrNull() ?: 5).coerceIn(1, 60)
                     setBlockCountdownSeconds(newSeconds)
                     logEvent(EventType.APP_UNBLOCKED, "Block countdown lowered to ${newSeconds}s via challenge approval")
                 }
@@ -646,6 +730,10 @@ class FocusGuardRepository @Inject constructor(
                 }
                 ChangeType.REMOVE_MINDFUL_APP -> {
                     logEvent(EventType.APP_UNBLOCKED, "Mindful app removed via challenge approval: ${pendingChange.targetName}")
+                }
+                ChangeType.INCREASE_MINDFUL_ALLOWANCE -> {
+                    val minutes = (pendingChange.targetPayload?.toIntOrNull() ?: 5).coerceIn(1, 120)
+                    mindfulDao.updateAllowanceMinutes(pendingChange.targetId, minutes)
                 }
             }
 
@@ -767,6 +855,10 @@ class FocusGuardRepository @Inject constructor(
     suspend fun blockKeyword(keyword: String): Boolean {
         val sanitized = sanitizeKeyword(keyword)
         if (sanitized.isNotBlank()) {
+            if (blockedKeywordDao.getBlockedKeyword(sanitized) != null) {
+                // Keyword is already blocked in the database
+                return false
+            }
             cachedBlockedKeywords.add(sanitized)
             return try {
                 blockedKeywordDao.insert(BlockedKeywordEntity(keyword = sanitized))
@@ -1029,9 +1121,9 @@ class FocusGuardRepository @Inject constructor(
 
     // ── Synchronous 0ms RAM Snapshots for Instant UI Rendering ──
 
-    fun getCurrentSettingsSnapshot(): com.focusguard.app.ui.settings.SettingsUiState {
+    fun getCurrentSettingsSnapshot(): com.focusguard.app.feature.settings.ui.SettingsUiState {
         val path = prefs.syncOverlayWallpaperPath
-        return com.focusguard.app.ui.settings.SettingsUiState(
+        return com.focusguard.app.feature.settings.ui.SettingsUiState(
             challengeType = prefs.syncChallengeType,
             commitmentSentence = prefs.syncCommitmentSentence,
             timeDelayHours = prefs.syncTimeDelayHours,
@@ -1056,13 +1148,13 @@ class FocusGuardRepository @Inject constructor(
         )
     }
 
-    fun getCurrentHomeSnapshot(permissions: ProtectionPermissionStatus = ProtectionPermissionStatus()): com.focusguard.app.ui.home.HomeUiState {
+    fun getCurrentHomeSnapshot(permissions: ProtectionPermissionStatus = ProtectionPermissionStatus()): com.focusguard.app.feature.home.ui.HomeUiState {
         val apps = if (cachedBlockedPackages.isNotEmpty()) cachedBlockedPackages.size else prefs.syncBlockedAppsCount
         val kws = if (cachedBlockedKeywords.isNotEmpty()) cachedBlockedKeywords.size else prefs.syncBlockedKeywordsCount
         val limits = if (cachedTimeLimits.isNotEmpty()) cachedTimeLimits.size else prefs.syncActiveTimeLimitsCount
         val schedules = if (cachedActiveSchedules.isNotEmpty()) cachedActiveSchedules.size else prefs.syncActiveSchedulesCount
 
-        return com.focusguard.app.ui.home.HomeUiState(
+        return com.focusguard.app.feature.home.ui.HomeUiState(
             isAccessibilityEnabled = permissions.isAccessibilityGranted,
             isDeviceAdminActive = permissions.isDeviceAdminGranted,
             isUsageAccessGranted = permissions.isUsageAccessGranted,
@@ -1087,31 +1179,71 @@ class FocusGuardRepository @Inject constructor(
             return SupportVerificationResult.RateLimited(remainingMins)
         }
 
-        val result = supportCodeEngine.verifySupportCode(
-            inputCode = code,
-            deviceId = getDeviceId(),
-            activeBlockedPackages = cachedBlockedPackages,
-            activeBlockedKeywords = cachedBlockedKeywords,
-            activeLimitPackages = cachedTimeLimits.keys
-        )
+        val result = runCatching {
+            supportCodeEngine.verifySupportCode(
+                inputCode = code,
+                deviceId = getDeviceId(),
+                activeBlockedPackages = cachedBlockedPackages,
+                activeBlockedKeywords = cachedBlockedKeywords,
+                activeLimitPackages = cachedTimeLimits.keys
+            )
+        }.getOrElse { failure ->
+            // An unconfigured master secret or a provider failure must never masquerade as a
+            // wrong code — the user would blame support. Log loudly, reject safely.
+            Log.e(
+                TAG,
+                "Support code verification aborted by ${failure.javaClass.simpleName}: ${failure.message}"
+            )
+            return SupportVerificationResult.InvalidCode
+        }
 
-        if (result is SupportVerificationResult.Success) {
-            prefs.resetSupportCodeWrongAttempts()
-        } else if (result is SupportVerificationResult.InvalidCode) {
-            val cooldownEnd = prefs.recordSupportCodeWrongAttempt()
-            if (cooldownEnd > 0) {
-                return SupportVerificationResult.RateLimited(15)
+        if (result is SupportVerificationResult.Success &&
+            prefs.isSupportCodeConsumed(result.matchedDate, result.codeFingerprint)
+        ) {
+            // Replay of an already-applied code: reject, but do not burn a wrong-attempt slot.
+            Log.i(TAG, "Support code replay rejected for action ${result.actionCode} (already applied)")
+            return SupportVerificationResult.AlreadyUsed
+        }
+
+        when (result) {
+            is SupportVerificationResult.Success -> prefs.resetSupportCodeWrongAttempts()
+            is SupportVerificationResult.InvalidCode -> {
+                val cooldownEnd = prefs.recordSupportCodeWrongAttempt()
+                if (cooldownEnd > 0L) {
+                    val remainingMins = ((cooldownEnd - System.currentTimeMillis()) / 60_000L) + 1
+                    return SupportVerificationResult.RateLimited(remainingMins.coerceAtLeast(1L))
+                }
             }
+            is SupportVerificationResult.AlreadyUsed -> Unit
+            is SupportVerificationResult.RateLimited -> Unit
         }
 
         return result
     }
 
-    suspend fun executeSupportAction(actionCode: String, targetPayload: String): Boolean {
+    suspend fun executeSupportAction(verified: SupportVerificationResult.Success): Boolean {
+        val actionCode = verified.actionCode
+        val targetPayload = verified.targetPayload
         Log.i(TAG, "Executing support action: Action $actionCode, payload: $targetPayload")
-        return when (actionCode) {
+
+        val applied = runCatching { applySupportAction(actionCode, targetPayload) }
+            .getOrElse { failure ->
+                Log.e(TAG, "Support action $actionCode failed: ${failure.javaClass.simpleName} - ${failure.message}")
+                false
+            }
+
+        if (applied) {
+            prefs.markSupportCodeConsumed(verified.matchedDate, verified.codeFingerprint)
+        }
+        return applied
+    }
+
+    private suspend fun applySupportAction(actionCode: String, targetPayload: String): Boolean =
+        when (actionCode) {
             SupportCodeEngine.ACTION_DISABLE_UNINSTALL -> {
                 setUninstallProtectionEnabled(false)
+                val adminRemoved = FocusGuardDeviceAdminReceiver.deactivateDeviceAdmin(context)
+                Log.i(TAG, "ACTION_DISABLE_UNINSTALL: Device Admin deactivated=$adminRemoved")
                 true
             }
             SupportCodeEngine.ACTION_RESET_CHALLENGE -> {
@@ -1136,31 +1268,43 @@ class FocusGuardRepository @Inject constructor(
                     true
                 } else false
             }
-            SupportCodeEngine.ACTION_DISABLE_FEED -> {
-                when (targetPayload) {
-                    "instagram" -> setInstagramReelsBlockEnabled(false)
-                    "youtube" -> setYouTubeShortsBlockEnabled(false)
-                    "facebook" -> setFacebookReelsBlockEnabled(false)
-                    "all" -> {
-                        setInstagramReelsBlockEnabled(false)
-                        setYouTubeShortsBlockEnabled(false)
-                        setFacebookReelsBlockEnabled(false)
-                        setShortsReelsBlockEnabled(false)
-                    }
+            SupportCodeEngine.ACTION_DISABLE_FEED -> when (targetPayload) {
+                "instagram" -> {
+                    setInstagramReelsBlockEnabled(false)
+                    true
                 }
-                true
+                "youtube" -> {
+                    setYouTubeShortsBlockEnabled(false)
+                    true
+                }
+                "facebook" -> {
+                    setFacebookReelsBlockEnabled(false)
+                    true
+                }
+                "all" -> {
+                    setInstagramReelsBlockEnabled(false)
+                    setYouTubeShortsBlockEnabled(false)
+                    setFacebookReelsBlockEnabled(false)
+                    setShortsReelsBlockEnabled(false)
+                    true
+                }
+                // Unknown feed payload: nothing was changed, so never report success.
+                else -> false
             }
             SupportCodeEngine.ACTION_RESET_LIMIT -> {
-                if (targetPayload.isNotBlank()) {
-                    val limit = cachedTimeLimits[targetPayload.lowercase()]
-                    if (limit != null) {
-                        appTimeLimitDao.upsert(limit.copy(isEnabled = false))
-                    }
+                val limit = cachedTimeLimits[targetPayload.lowercase()]
+                if (limit != null) {
+                    appTimeLimitDao.upsert(limit.copy(isEnabled = false))
                     true
-                } else false
+                } else {
+                    Log.w(TAG, "ACTION_RESET_LIMIT: no stored limit for '$targetPayload' — nothing applied")
+                    false
+                }
             }
             SupportCodeEngine.ACTION_FULL_RESET -> {
                 setUninstallProtectionEnabled(false)
+                val adminRemoved = FocusGuardDeviceAdminReceiver.deactivateDeviceAdmin(context)
+                Log.i(TAG, "ACTION_FULL_RESET: Device Admin deactivated=$adminRemoved")
                 setShortsReelsBlockEnabled(false)
                 setInstagramReelsBlockEnabled(false)
                 setFacebookReelsBlockEnabled(false)
@@ -1189,11 +1333,37 @@ class FocusGuardRepository @Inject constructor(
             }
             else -> false
         }
-    }
 
     val isOemGuidanceAcknowledged: kotlinx.coroutines.flow.Flow<Boolean> = prefs.oemGuidanceAcknowledged
 
     suspend fun setOemGuidanceAcknowledged(acknowledged: Boolean) {
         prefs.setOemGuidanceAcknowledged(acknowledged)
     }
+
+    companion object {
+        /**
+         * Single source of truth: is Uninstall Protection genuinely active?
+         *
+         * Rules (ALL must hold):
+         *   - enabled == true
+         *   - days >= 1
+         *   - expiry > 0L
+         *   - now < expiry
+         *
+         * "enabled but no expiry" is NOT a valid active state — it means the flag was set without
+         * going through startTimedUninstallProtection() (legacy / corrupt state).
+         */
+        fun isProtectionReallyActive(
+            enabled: Boolean,
+            days: Int,
+            expiry: Long,
+            now: Long
+        ): Boolean {
+            if (!enabled) return false
+            if (days < 1) return false
+            if (expiry <= 0L) return false
+            return now < expiry
+        }
+    }
 }
+

@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.widget.Toast
 
 private const val TAG = "BatteryOptimization"
 
@@ -60,6 +61,48 @@ object BatteryOptimizationHelper {
             } catch (ex: Exception) {
                 openApplicationDetailsSettings(context)
             }
+        }
+    }
+
+    /**
+     * Directly opens the most effective battery settings screen for the current device:
+     * 1. If not yet exempted, prompts Android's native 1-tap ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS dialog.
+     * 2. If OEM-specific (Vivo, Xiaomi, Samsung, OnePlus), launches the manufacturer's background management page.
+     * 3. Falls back to App Info where "Battery: Unrestricted" can be configured.
+     */
+    fun openDirectBatterySettings(context: Context) {
+        try {
+            Toast.makeText(context, getOemShortToast(), Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to show battery guidance toast: ${e.message}")
+        }
+
+        val isAlreadyIgnored = isBatteryOptimizationIgnored(context)
+        if (!isAlreadyIgnored) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS failed, opening OEM or settings", e)
+            }
+        }
+
+        // Try OEM-specific page first
+        val openedOem = openAutostartSettings(context)
+        if (openedOem) return
+
+        // Fallback: Generic battery optimization or app details
+        try {
+            val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(fallbackIntent)
+        } catch (_: Exception) {
+            openApplicationDetailsSettings(context)
         }
     }
 
@@ -165,7 +208,9 @@ object BatteryOptimizationHelper {
             try {
                 context.startActivity(intent)
                 return true
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.d(TAG, "OEM intent fallback failed: ${e.message}")
+            }
         }
 
         // Final fallback: App Details
@@ -209,32 +254,52 @@ object BatteryOptimizationHelper {
         }
     }
 
+    fun getOemProtectionTitle(): String {
+        val shortName = getOemShortName()
+        return if (isProblematicOem()) "$shortName Background Protection" else "Background Battery Protection"
+    }
+
     fun getOemDialogHeadline(): String {
+        val shortName = getOemShortName()
         return when (getOemBrand()) {
-            OemBrand.VIVO -> "Vivo detected: Auto-start allow karein"
-            OemBrand.SAMSUNG -> "Samsung detected: 'Put app to sleep' option OFF karein"
-            OemBrand.XIAOMI -> "Xiaomi detected: Auto-start allow karein"
-            OemBrand.ONEPLUS -> "OnePlus detected: Auto-launch enable karein"
-            OemBrand.OPPO_REALME -> "${getOemShortName()} detected: Auto-launch allow karein"
-            OemBrand.HUAWEI -> "Huawei detected: App launch 'Manual' set karein"
-            OemBrand.GENERIC -> "Background Protection: 'Unrestricted' battery allow karein"
+            OemBrand.VIVO -> "$shortName: Allow High Background Power"
+            OemBrand.SAMSUNG -> "$shortName: Set Battery to Unrestricted"
+            OemBrand.XIAOMI -> "$shortName: Enable Autostart & No Restrictions"
+            OemBrand.ONEPLUS -> "$shortName: Enable Auto-Launch"
+            OemBrand.OPPO_REALME -> "$shortName: Allow Background Activity"
+            OemBrand.HUAWEI -> "$shortName: Manage Launch Manually"
+            OemBrand.GENERIC -> "Background Protection: Unrestricted Battery"
         }
     }
 
     fun getOemWhyNeededText(): String {
         val shortName = getOemShortName()
-        return "$shortName aggressive battery saver use karta hai jo screen band hone par accessibility service ko kill kar deta hai. Phone restart ya low battery me bhi FocusGuard active rahe, iske liye yeh zaroori hai."
+        return "$shortName uses aggressive power saving that can terminate FocusGuard when the screen is locked. Setting battery usage to 'Unrestricted' guarantees focus protection stays active 24/7."
     }
 
     fun getOemActionSummary(): String {
+        val shortName = getOemShortName()
         return when (getOemBrand()) {
-            OemBrand.VIVO -> "Auto-start allow karein & High background power consumption enable karein"
-            OemBrand.SAMSUNG -> "'Put app to sleep' OFF karein aur Battery 'Unrestricted' set karein"
-            OemBrand.XIAOMI -> "Autostart ON karein aur Battery Saver me 'No restrictions' select karein"
-            OemBrand.ONEPLUS -> "Auto-launch enable karein aur Battery optimization 'Don't optimize' karein"
-            OemBrand.OPPO_REALME -> "Auto-launch aur Allow background activity ON karein"
-            OemBrand.HUAWEI -> "App Launch ko 'Manage manually' set karein"
-            OemBrand.GENERIC -> "Battery Optimization disable karein taaki app background me chal sake"
+            OemBrand.VIVO -> "Allow High Background Power & Auto-start so blocking stays active"
+            OemBrand.SAMSUNG -> "Turn off 'Put to sleep' and set Battery to 'Unrestricted'"
+            OemBrand.XIAOMI -> "Enable Autostart & select 'No restrictions' in Battery Saver"
+            OemBrand.ONEPLUS -> "Enable Auto-launch & set Battery to 'Don't optimize'"
+            OemBrand.OPPO_REALME -> "Enable Auto-launch & Allow Background Activity"
+            OemBrand.HUAWEI -> "Set App Launch to 'Manage Manually' with all permissions"
+            OemBrand.GENERIC -> "Set Battery to 'Unrestricted' so Android won't stop FocusGuard"
+        }
+    }
+
+    fun getOemShortToast(): String {
+        val shortName = getOemShortName()
+        return when (getOemBrand()) {
+            OemBrand.VIVO -> "Select 'Allow high background power consumption' for FocusGuard"
+            OemBrand.SAMSUNG -> "Set FocusGuard Battery usage to 'Unrestricted'"
+            OemBrand.XIAOMI -> "Enable Autostart and select 'No restrictions' in Battery Saver"
+            OemBrand.ONEPLUS -> "Enable Auto-launch and set Battery to 'Don't optimize'"
+            OemBrand.OPPO_REALME -> "Enable Auto-launch and Allow Background Activity"
+            OemBrand.HUAWEI -> "Set FocusGuard App Launch to 'Manage manually'"
+            OemBrand.GENERIC -> "Set FocusGuard Battery usage to 'Unrestricted'"
         }
     }
 
@@ -248,36 +313,36 @@ object BatteryOptimizationHelper {
             OemBrand.XIAOMI -> listOf(
                 "Settings → Apps → Manage apps → FocusGuard → Autostart → Enable",
                 "Settings → Battery → App battery saver → FocusGuard → No restrictions",
-                "Recent Apps screen me FocusGuard card ko swipe-down / long-press karke 🔒 Lock karein"
+                "Recent Apps screen: Swipe down or long-press FocusGuard and tap 🔒 Lock"
             )
             OemBrand.OPPO_REALME -> listOf(
                 "Settings → Battery → App Battery Management → FocusGuard → Allow background activity",
                 "Settings → App Management → Auto-launch → FocusGuard → Enable",
-                "Recent Apps screen me FocusGuard card par 🔒 Lock icon tap karein"
+                "Recent Apps screen: Tap 🔒 Lock icon on FocusGuard card"
             )
             OemBrand.VIVO -> listOf(
                 "iManager → Permission Manager → Autostart → FocusGuard → Enable",
                 "Settings → Battery → Background power consumption → FocusGuard → High background power consumption",
-                "Recent Apps screen me FocusGuard card ko swipe-down karke 🔒 Lock karein"
+                "Recent Apps screen: Swipe down FocusGuard card and tap 🔒 Lock"
             )
             OemBrand.SAMSUNG -> listOf(
                 "Settings → Apps → FocusGuard → Battery → Set to 'Unrestricted'",
                 "Settings → Battery and device care → Battery → Background usage limits → Ensure FocusGuard is in 'Never sleeping apps'",
-                "Recent Apps me FocusGuard card par tap karke 'Lock this app' select karein"
+                "Recent Apps screen: Tap FocusGuard icon and select 'Lock this app'"
             )
             OemBrand.ONEPLUS -> listOf(
                 "Settings → Apps → Auto-launch → FocusGuard → Enable",
                 "Settings → Battery → Advanced settings → Optimize battery use → FocusGuard → Don't optimize",
-                "Recent Apps me FocusGuard par 🔒 Lock tap karein"
+                "Recent Apps screen: Tap 🔒 Lock on FocusGuard card"
             )
             OemBrand.HUAWEI -> listOf(
                 "Settings → Battery → App launch → FocusGuard → Switch to 'Manage manually'",
                 "Enable: Auto-launch, Secondary launch, and Run in background",
-                "Recent Apps me FocusGuard card ko 🔒 Lock karein"
+                "Recent Apps screen: Lock FocusGuard card"
             )
             OemBrand.GENERIC -> listOf(
                 "Settings → Apps → FocusGuard → Battery → Set to 'Unrestricted'",
-                "Recent Apps me FocusGuard app ko swipe-away mat karein"
+                "Keep FocusGuard active in Recent Apps screen"
             )
         }
     }

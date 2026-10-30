@@ -30,9 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.focusguard.app.data.db.ChallengeType
-import com.focusguard.app.data.db.PartnershipEntity
-import com.focusguard.app.data.model.PartnershipStatus
+import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.database.entity.PartnershipEntity
+import com.focusguard.app.core.model.PartnershipStatus
 
 private val Navy900  = Color(0xFF07140D)
 private val Navy800  = Color(0xFF0E2419)
@@ -65,7 +65,12 @@ fun ChangeChallengeTypeDialog(
     var selectedType by remember {
         mutableStateOf(if (currentType == ChallengeType.PARTNER && !isUserLoggedIn) ChallengeType.TYPING else currentType)
     }
-    var sentence by remember { mutableStateOf(currentSentence) }
+    var sentence by remember {
+        mutableStateOf(
+            if (currentSentence.trim().length >= 500) currentSentence.trim()
+            else CommitmentChallengeGenerator.generate()
+        )
+    }
     var delayHours by remember { mutableIntStateOf(currentDelayHours) }
 
     val hasPartner = partnership != null
@@ -145,7 +150,13 @@ fun ChangeChallengeTypeDialog(
                                 }
                             }
                         }
-
+                        Text(
+                            text = "Requires typing a random 500+ character text with complex symbols [-, ;, ', etc.] to prevent impulse bypass.",
+                            color = White60,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(start = 44.dp)
+                        )
                     }
                 }
 
@@ -235,10 +246,17 @@ fun ChangeChallengeTypeDialog(
                         ChallengeType.TYPING -> true
                         ChallengeType.PARTNER -> hasPartner
                     }
+                    var isSubmitting by remember { mutableStateOf(false) }
 
                     Button(
-                        onClick = { onConfirmChange(selectedType, sentence, delayHours) },
-                        enabled = canConfirm,
+                        onClick = {
+                            if (!isSubmitting) {
+                                isSubmitting = true
+                                val finalSentence = if (sentence.trim().length >= 500) sentence.trim() else CommitmentChallengeGenerator.generate()
+                                onConfirmChange(selectedType, finalSentence, delayHours)
+                            }
+                        },
+                        enabled = canConfirm && !isSubmitting,
                         modifier = Modifier.weight(1f).height(44.dp),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(

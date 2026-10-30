@@ -60,18 +60,23 @@ class AccessibilityHealthWorker(
             Log.d(TAG, "Accessibility health check: isServiceRunning=$isRunning")
 
             if (!isRunning) {
-                // If user has active protection configured, notify them to reactivate
-                val isProtectionConfigured = repository.isFastUninstallProtectionEnabled() ||
-                        repository.getFastBlockedAppsCount() > 0
+                // Invariant Rule 3: Only alert user if uninstall protection is strictly ACTIVE
+                val isProtectionConfigured = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(appContext) &&
+                        repository.isFastUninstallProtectionEnabled()
 
                 if (isProtectionConfigured) {
                     Log.w(TAG, "Ghost Accessibility state detected: service is dead while protection was enabled. Alerting user.")
                     postReactivationNotification(appContext)
+                } else {
+                    Log.d(TAG, "Accessibility not running, but uninstall protection is inactive. Dismissing any alerts.")
+                    cancelReactivationNotification(appContext)
                 }
             } else {
                 // Check if battery optimization was revoked while protection is active
                 val isBatteryExempt = com.focusguard.app.utils.BatteryOptimizationHelper.isBatteryOptimizationIgnored(appContext)
-                if (!isBatteryExempt && repository.isFastUninstallProtectionEnabled()) {
+                val isProtectionActive = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(appContext) &&
+                        repository.isFastUninstallProtectionEnabled()
+                if (!isBatteryExempt && isProtectionActive) {
                     Log.w(TAG, "Battery Optimization exemption was revoked while protection enabled.")
                     postBatteryOptimizationNotification()
                 }
@@ -140,6 +145,12 @@ class AccessibilityHealthWorker(
         }
 
         fun postReactivationNotification(context: Context) {
+            if (!com.focusguard.app.recovery.AccessibilityRecoveryHelper.isProtectionActive(context)) {
+                Log.d(TAG, "postReactivationNotification: protection is inactive, skipping.")
+                cancelReactivationNotification(context)
+                return
+            }
+
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -179,15 +190,13 @@ class AccessibilityHealthWorker(
 
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setContentTitle("🚨 CRITICAL: FocusGuard Protection Paused")
-                .setContentText("Accessibility was stopped by device restart or OS. Tap to restore immediately.")
+                .setContentText("Accessibility was turned off. Tap to restore immediately.")
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(recoveryPendingIntent)
-                .setFullScreenIntent(recoveryPendingIntent, true)
                 .addAction(R.drawable.ic_notification, "Restore Shield", settingsPendingIntent)
                 .setOngoing(true)
                 .setAutoCancel(false)
-                .setCategory(NotificationCompat.CATEGORY_ALARM)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
 

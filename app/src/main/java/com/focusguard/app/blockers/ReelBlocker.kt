@@ -4,8 +4,8 @@ import android.content.res.Resources
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.focusguard.app.data.model.BlockAction
-import com.focusguard.app.data.model.ReelTargetRegistry
+import com.focusguard.app.core.model.BlockAction
+import com.focusguard.app.core.model.ReelTargetRegistry
 import com.focusguard.app.utils.SafeNodeUtils
 import javax.inject.Inject
 import javax.inject.Singleton

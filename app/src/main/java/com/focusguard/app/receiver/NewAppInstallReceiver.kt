@@ -23,7 +23,10 @@ class NewAppInstallReceiver @Inject constructor(
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase
 ) : BroadcastReceiver() {
 
-    private val receiverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled coroutine exception in NewAppInstallReceiver", throwable)
+    }
+    private val receiverScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + coroutineExceptionHandler)
 
     override fun onReceive(context: Context, intent: Intent?) {
         Log.i(TAG, "onReceive triggered: action=${intent?.action}, data=${intent?.data}")

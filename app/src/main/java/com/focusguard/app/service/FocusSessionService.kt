@@ -106,7 +106,7 @@ class FocusSessionService : Service() {
     }
 
     private fun buildNotification(remainingMins: Int): Notification {
-        val openIntent = Intent(this, com.focusguard.app.ui.session.SessionLockActivity::class.java).apply {
+        val openIntent = Intent(this, com.focusguard.app.feature.session.ui.SessionLockActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pendingIntent = PendingIntent.getActivity(

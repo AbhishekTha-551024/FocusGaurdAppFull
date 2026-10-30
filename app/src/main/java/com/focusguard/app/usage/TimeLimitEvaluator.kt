@@ -1,6 +1,6 @@
 package com.focusguard.app.usage
 
-import com.focusguard.app.data.db.AppTimeLimitEntity
+import com.focusguard.app.core.database.entity.AppTimeLimitEntity
 import java.util.Calendar
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -67,7 +67,7 @@ class TimeLimitEvaluator @Inject constructor(
      * with millisecond precision to eliminate late blocking.
      */
     fun evaluate(packageName: String, limitEntity: AppTimeLimitEntity, liveSessionMs: Long = 0L): LimitStatus {
-        if (!limitEntity.isEnabled) {
+        if (!limitEntity.isEnabled || limitEntity.dailyLimitMinutes <= 0) {
             return LimitStatus.Ok
         }
 

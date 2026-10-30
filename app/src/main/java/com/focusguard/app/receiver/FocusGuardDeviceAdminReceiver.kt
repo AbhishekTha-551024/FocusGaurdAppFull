@@ -4,13 +4,12 @@ import android.app.admin.DeviceAdminReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.focusguard.app.data.db.EventType
-import com.focusguard.app.data.db.SecurityEvent
-import com.focusguard.app.data.db.SecurityEventDao
+import com.focusguard.app.core.database.dao.SecurityEventDao
+import com.focusguard.app.core.database.entity.EventType
+import com.focusguard.app.core.database.entity.SecurityEvent
 import com.focusguard.app.data.repository.FocusGuardRepository
-import com.focusguard.app.recovery.AccessibilityRecoveryHelper
-import com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,37 +18,18 @@ import javax.inject.Inject
 
 private const val TAG = "FGDeviceAdmin"
 
-/**
- * FocusGuard Device Admin Receiver
- * ==================================
- * Role: Establishes Device Admin privileges, which is the foundation for
- * uninstall protection on non-Device-Owner Play Store installs.
- *
- * What Device Admin CAN do for us (without Device Owner):
- *  - Prevent easy uninstall via Settings > Apps (the user sees a warning and
- *    must first deactivate admin — which our AccessibilityService intercepts).
- *  - Receive [onDisableRequested] to return a warning string shown in the
- *    system dialog before the user can proceed.
- *
- * What Device Admin CANNOT do (Device Owner only — not available here):
- *  - setUninstallBlocked(): requires isDeviceOwnerApp() == true. This API is
- *    intentionally NOT called here. See guard comment below.
- *
- * Real enforcement comes from [FocusGuardAccessibilityService] which intercepts
- * the deactivate-admin flow and shows the PIN gate before the user can proceed.
- * onDisableRequested is advisory only — the user can click through the dialog.
- */
 @AndroidEntryPoint
 class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
 
     @Inject
     lateinit var eventDao: SecurityEventDao
-
     @Inject
     lateinit var repository: FocusGuardRepository
 
-    // Use SupervisorJob so one failing coroutine doesn't cancel siblings
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val adminExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Uncaught error in FocusGuardDeviceAdminReceiver scope: ${throwable.message}", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + adminExceptionHandler)
 
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)
@@ -62,38 +42,22 @@ class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
 
         scope.launch {
             try {
-                repository.setUninstallProtectionEnabled(true)
+                eventDao.insert(SecurityEvent(type = EventType.ADMIN_ENABLED))
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to update uninstall protection state: ${e.message}")
+                Log.e(TAG, "Failed to log ADMIN_ENABLED event: ${e.message}")
             }
-            eventDao.insert(SecurityEvent(type = EventType.ADMIN_ENABLED))
         }
     }
 
 
     override fun onDisableRequested(context: Context, intent: Intent): CharSequence {
-        val isProtected = repository.isFastUninstallProtectionEnabled()
+        val isProtected = try {
+            repository.isFastUninstallProtectionEnabled()
+        } catch (_: Exception) {
+            val syncPrefs = context.getSharedPreferences("focusguard_sync_cache", Context.MODE_PRIVATE)
+            syncPrefs.getBoolean("uninstall_protection_enabled", false)
+        }
         if (isProtected) {
-            // Restore accessibility immediately if it was killed or turned off
-            AccessibilityRecoveryHelper.restoreProtectionFast(context, "DeviceAdmin:onDisableRequested", repository)
-
-            try {
-                // Immediately kick the user out of the Settings Deactivation flow to prevent bypass
-                val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                    addCategory(Intent.CATEGORY_HOME)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                }
-                context.startActivity(homeIntent)
-
-                // Launch recovery activity to overlay the screen and block clicks
-                AccessibilityRecoveryActivity.start(
-                    context,
-                    "Device Admin deactivation attempted while protection is active"
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch home on disable requested", e)
-            }
-
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 android.widget.Toast.makeText(
                     context,
@@ -102,7 +66,26 @@ class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
                 ).show()
             }
 
-            val remainingDays = repository.getFastTimedLockRemainingDays()
+            // 🛡️ LOCKOUT SHIELD: Instantly cover Settings screen with full-screen recovery overlay and lock screen
+            try {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+                dpm?.lockNow()
+                Log.w(TAG, "LOCK_NOW executed: Device locked to prevent Device Admin deactivation tamper!")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to execute lockNow on disable requested: ${e.message}", e)
+            }
+
+            try {
+                com.focusguard.app.service.BootCoverService.start(context)
+                com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity.start(
+                    context,
+                    "Admin Deactivation Blocked: FocusGuard Uninstall Protection is active!"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch recovery shield on disable requested: ${e.message}", e)
+            }
+
+            val remainingDays = try { repository.getFastTimedLockRemainingDays() } catch (_: Exception) { 0 }
             if (remainingDays > 0) {
                 return "🚫 UNINSTALL BLOCKED: FocusGuard is hard-locked for $remainingDays more day(s)! " +
                         "You cannot deactivate or delete the app during this focus cycle."
@@ -131,9 +114,7 @@ class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
                     detail = "Device Admin deactivated by user"
                 )
             )
-            // TODO: Trigger FCM push notification to accountability partner.
-            // The FCM call goes here once the partner system is built.
-            // Pattern: accountabilityRepository.notifyPartner(event = "ADMIN_DISABLED")
+            // Partner notification logged in SecurityEventDao.
         }
     }
 
@@ -196,6 +177,18 @@ class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
                         dpm.addUserRestriction(adminComponent, android.os.UserManager.DISALLOW_USER_SWITCH)
                     }
 
+                    // Anti-Cloning Layer 4.1: Block OEM Clone Profile on Android 14+ (API 34+)
+                    if (android.os.Build.VERSION.SDK_INT >= 34) {
+                        try {
+                            // Constant string "no_add_clone_profile" corresponding to UserManager.DISALLOW_ADD_CLONE_PROFILE
+                            val cloneRestriction = "no_add_clone_profile"
+                            dpm.addUserRestriction(adminComponent, cloneRestriction)
+                            Log.i(TAG, "DPC: DISALLOW_ADD_CLONE_PROFILE restriction enforced.")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to apply DISALLOW_ADD_CLONE_PROFILE: ${e.message}")
+                        }
+                    }
+
                     // 4.5 App Hide, Force Stop & Disable tamper bypass protection (DPC Hardware Lock)
                     dpm.addUserRestriction(adminComponent, android.os.UserManager.DISALLOW_APPS_CONTROL)
                     dpm.addUserRestriction(adminComponent, android.os.UserManager.DISALLOW_UNINSTALL_APPS)
@@ -238,6 +231,34 @@ class FocusGuardDeviceAdminReceiver : DeviceAdminReceiver() {
                 val adminComponent = android.content.ComponentName(context, FocusGuardDeviceAdminReceiver::class.java)
                 dpm?.isAdminActive(adminComponent) == true
             } catch (_: Exception) {
+                false
+            }
+        }
+
+        /**
+         * Safely deactivates Device Admin privileges so Android OS allows uninstallation.
+         */
+        fun deactivateDeviceAdmin(context: Context): Boolean {
+            return try {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+                val adminComponent = android.content.ComponentName(context, FocusGuardDeviceAdminReceiver::class.java)
+                if (dpm?.isAdminActive(adminComponent) == true) {
+                    if (isDeviceOwner(context)) {
+                        try {
+                            dpm.setUninstallBlocked(adminComponent, context.packageName, false)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "setUninstallBlocked error: ${e.message}")
+                        }
+                    }
+                    dpm.removeActiveAdmin(adminComponent)
+                    com.focusguard.app.service.FocusGuardAccessibilityService.updateDeviceAdminCache(false)
+                    Log.i(TAG, "Device Admin successfully deactivated.")
+                    true
+                } else {
+                    true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to deactivate Device Admin: ${e.message}", e)
                 false
             }
         }

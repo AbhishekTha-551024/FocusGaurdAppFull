@@ -11,7 +11,7 @@ import android.os.Build
 import android.os.Process
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
-import com.focusguard.app.data.datastore.FocusGuardPreferences
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.utils.BatteryOptimizationHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -45,7 +45,9 @@ class CapabilityManager @Inject constructor(
                     }
                 }
             )
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.d("CapabilityManager", "registerContentObserver error: ${e.message}")
+        }
     }
 
     fun refresh() {
@@ -134,7 +136,7 @@ class CapabilityManager @Inject constructor(
                 m.contains("oppo") || m.contains("realme") || m.contains("vivo") ||
                 m.contains("iqoo") || m.contains("samsung") || m.contains("oneplus") ||
                 m.contains("huawei") || m.contains("honor")
-        return if (!isOemBrand) true else prefs.syncOemGuidanceAcknowledged
+        return if (!isOemBrand) true else (isBatteryOptimizationIgnored() || prefs.syncOemGuidanceAcknowledged)
     }
 
     // ── Lifecycle-Aware Capability State Computations ─────────────────────────

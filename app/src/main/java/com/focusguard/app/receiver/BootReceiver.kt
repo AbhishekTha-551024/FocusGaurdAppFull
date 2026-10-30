@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.focusguard.app.data.db.EventType
+import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.recovery.AccessibilityRecoveryHelper
 import com.focusguard.app.service.ProtectionWatchdogService
@@ -34,7 +34,10 @@ class BootReceiver : BroadcastReceiver() {
     @Inject
     lateinit var repository: FocusGuardRepository
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled coroutine exception in BootReceiver", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + coroutineExceptionHandler)
 
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
@@ -44,9 +47,14 @@ class BootReceiver : BroadcastReceiver() {
 
         // 1. Direct Boot Handler (before user enters PIN / Pattern)
         if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED || isDirectBoot) {
-            Log.i(TAG, "Direct Boot detected ($action) — attempting programmatic silent recovery.")
-            // CE storage (Room/DataStore) is still locked, but Settings.Secure is available
-            AccessibilityRecoveryHelper.tryEnableAccessibilityProgrammatically(context)
+            Log.i(TAG, "Direct Boot detected ($action) — checking protection state before silent recovery.")
+            // CE storage (Room/DataStore) is still locked, but DE storage + Settings.Secure is available
+            if (AccessibilityRecoveryHelper.isProtectionActive(context, repository)) {
+                Log.i(TAG, "Direct Boot: Uninstall protection is ACTIVE. Restoring accessibility programmatically.")
+                AccessibilityRecoveryHelper.tryEnableAccessibilityProgrammatically(context)
+            } else {
+                Log.i(TAG, "Direct Boot: Uninstall protection is OFF. Skipping accessibility auto-enable.")
+            }
             return
         }
 
@@ -67,6 +75,22 @@ class BootReceiver : BroadcastReceiver() {
                 Log.w(TAG, "Failed to re-enforce DPC policies on boot: ${e.message}")
             }
 
+            // STEP A.5: Boot Cover Shield — Mount temporary cover overlay if protection is active
+            // and Accessibility Service has not yet connected to close the boot vulnerability gap.
+            try {
+                if (AccessibilityRecoveryHelper.isProtectionActive(context, repository) &&
+                    !com.focusguard.app.service.FocusGuardAccessibilityService.isServiceRunning
+                ) {
+                    com.focusguard.app.service.BootCoverService.start(context)
+                    com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity.start(
+                        context,
+                        "Device event ($action): Restoring accessibility protection"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initiate BootCoverService/RecoveryActivity on boot: ${e.message}", e)
+            }
+
             // STEP B: Restore Accessibility immediately (< 1ms if WRITE_SECURE_SETTINGS, else Activity + Alert)
             AccessibilityRecoveryHelper.restoreProtectionFast(
                 context = context,
@@ -84,7 +108,9 @@ class BootReceiver : BroadcastReceiver() {
             // STEP C: Ensure no dangling background services
             try {
                 ProtectionWatchdogService.stopService(context)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.d(TAG, "ProtectionWatchdogService stopService error: ${e.message}")
+            }
 
             // STEP D: Reconcile any pending time-delay changes that matured while device was off
             val pendingResult = goAsync()

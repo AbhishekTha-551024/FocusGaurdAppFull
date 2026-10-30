@@ -4,9 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityManager
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -21,13 +23,13 @@ import com.focusguard.app.blockers.KeywordBlocker
 import com.focusguard.app.blockers.MultiWindowGuard
 import com.focusguard.app.blockers.ReelBlocker
 import com.focusguard.app.blockers.TimeTamperGuard
-import com.focusguard.app.data.db.EventType
+import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.AccessDecision
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.usage.ScheduleEvaluator
 import com.focusguard.app.observer.AccessibilityStateObserver
-import com.focusguard.app.overlay.BlockOverlayManager
-import com.focusguard.app.overlay.OverlayBlockType
+import com.focusguard.app.overlay.manager.BlockOverlayManager
+import com.focusguard.app.overlay.manager.OverlayBlockType
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.tracker.BrowserHeartbeatTracker
 import com.focusguard.app.tracker.BrowserUrlTracker
@@ -93,6 +95,18 @@ class FocusGuardAccessibilityService : AccessibilityService() {
 
     @Inject
     lateinit var adultContentShield: com.focusguard.app.blockers.AdultContentShield
+
+    @Inject
+    lateinit var audioManagerHelper: com.focusguard.app.utils.AudioManagerHelper
+
+    @Inject
+    lateinit var blockDecisionEngine: com.focusguard.app.core.engine.BlockDecisionEngine
+
+    @Inject
+    lateinit var rulesSnapshotHolder: com.focusguard.app.core.engine.RulesSnapshotHolder
+
+    @Inject
+    lateinit var rulesSnapshotSynchronizer: com.focusguard.app.core.engine.RulesSnapshotSynchronizer
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val mindfulExpiryRunnables = java.util.concurrent.ConcurrentHashMap<String, Runnable>()
@@ -223,6 +237,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
         lastAliveTimestamp = now
         overlayManager.setServiceContext(this)
         com.focusguard.app.worker.AccessibilityHealthWorker.cancelReactivationNotification(this)
+        com.focusguard.app.service.BootCoverService.dismiss(this)
 
         // ── SETTINGS COOLDOWN ON EVERY CONNECT ──────────────────────────────
         // On EVERY connect (OEM-forced OR manual re-enable), the service reconnects
@@ -276,13 +291,80 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "Device admin cache refreshed: ${cachedDeviceAdminActive.get()}")
             }
         }
+        val isDirectBoot = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isDirectBootLocked(this)
+        if (isDirectBoot) {
+            Log.i(TAG, "Direct Boot detected during onServiceConnected — loading caches from DE storage.")
+            loadDirectBootDeCaches()
+            registerUserUnlockedReceiver()
+        } else {
+            initCeStorageAndObservers()
+        }
+
+        val info = AccessibilityServiceInfo().apply {
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                    AccessibilityEvent.TYPE_VIEW_CLICKED or
+                    AccessibilityEvent.TYPE_VIEW_LONG_CLICKED or
+                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
+                    AccessibilityEvent.TYPE_VIEW_SCROLLED or
+                    // SECURITY FIX (AGENTS Rule 8): TYPE_WINDOWS_CHANGED is required so that
+                    // MultiWindowGuard.checkAndInterceptMultiWindow() actually receives split-screen
+                    // and PiP window events. Without this flag the OS never delivers these events
+                    // and the entire multi-window block path is silently bypassed.
+                    AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            notificationTimeout = 10
+        }
+        this.serviceInfo = info
+
+        // Dynamically register NewAppInstallReceiver so modern Android (API 26-35) delivers ACTION_PACKAGE_ADDED
+        try {
+            val packageFilter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED)
+                addDataScheme("package")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(newAppInstallReceiver, packageFilter, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(newAppInstallReceiver, packageFilter)
+            }
+            isNewAppReceiverRegistered = true
+            Log.i(TAG, "Dynamic NewAppInstallReceiver registered successfully.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register dynamic NewAppInstallReceiver", e)
+        }
+
+        lastFocusGuardPickedUpTimestamp = 0L
+        lastFocusGuardTouchTimestamp = 0L
+        lastFocusGuardPopupBlockTimestamp = 0L
+
+        // SWEEP ON RECONNECT: Delayed by 3s on every connect.
+        // Live events arrive within < 100ms — the 10s cooldown handles them.
+        // Sweep runs at 3s to catch any blocked app that was open BEFORE the service started.
+        mainHandler.postDelayed({ sweepActiveWindowOnConnect() }, 3000L)
+    }
+
+    private var isCeStorageInitialized = false
+
+    private fun initCeStorageAndObservers() {
+        if (isCeStorageInitialized) return
+        isCeStorageInitialized = true
+        Log.i(TAG, "Initializing CE storage observers (Room, DataStore, Sessions).")
+
+        // Start unified RulesSnapshot synchronizer
+        rulesSnapshotSynchronizer.start(scope)
+
         // Force-sync uninstall protection from DataStore to eliminate startup race window
         repository.refreshUninstallProtectionNow()
 
         // BlockerHero architecture: No persistent foreground service / notification needed.
         try {
             ProtectionWatchdogService.stopService(this)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Watchdog stop exception: ${e.message}")
+        }
 
         // Register ContentObserver for instant Settings toggle detection
         accessibilityStateObserver = AccessibilityStateObserver(this, repository, scope).also {
@@ -322,7 +404,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             val currentPkg = currentForegroundPackage
             val isAllowed = currentPkg != null && (sessionBlockManager.isAlwaysAllowedPackage(currentPkg) || sessionBlockManager.suitcasePackages.contains(currentPkg.lowercase()))
             if (!isAllowed) {
-                com.focusguard.app.ui.session.SessionLockActivity.start(this)
+                com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
             }
         }
 
@@ -332,55 +414,55 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     val currentPkg = currentForegroundPackage
                     val isAllowed = currentPkg != null && (sessionBlockManager.isAlwaysAllowedPackage(currentPkg) || sessionBlockManager.suitcasePackages.contains(currentPkg.lowercase()))
                     if (!isAllowed) {
-                        com.focusguard.app.ui.session.SessionLockActivity.start(this@FocusGuardAccessibilityService)
+                        com.focusguard.app.feature.session.ui.SessionLockActivity.start(this@FocusGuardAccessibilityService)
                     }
                 }
             }
         }
+    }
 
-        val info = AccessibilityServiceInfo().apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
-                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
-                    AccessibilityEvent.TYPE_VIEW_SCROLLED or
-                    // SECURITY FIX (AGENTS Rule 8): TYPE_WINDOWS_CHANGED is required so that
-                    // MultiWindowGuard.checkAndInterceptMultiWindow() actually receives split-screen
-                    // and PiP window events. Without this flag the OS never delivers these events
-                    // and the entire multi-window block path is silently bypassed.
-                    AccessibilityEvent.TYPE_WINDOWS_CHANGED
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-                    AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS or
-                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-            notificationTimeout = 0
+    private fun loadDirectBootDeCaches() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                val deContext = createDeviceProtectedStorageContext()
+                val dePrefs = deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE)
+                val deBlocked = dePrefs.getStringSet("blocked_packages", emptySet()) ?: emptySet()
+                blockedPackages.clear()
+                blockedPackages.addAll(deBlocked.map { it.lowercase() })
+                blockedPackages.addAll(deBlocked)
+                val isDeProtected = dePrefs.getBoolean("uninstall_protection_enabled", false)
+                Log.i(TAG, "Direct Boot DE cache loaded: ${blockedPackages.size} packages, uninstallProtection=$isDeProtected")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load DE cache in Direct Boot: ${e.message}", e)
+            }
         }
-        this.serviceInfo = info
+    }
 
-        // Dynamically register NewAppInstallReceiver so modern Android (API 26-35) delivers ACTION_PACKAGE_ADDED
+    private var userUnlockedReceiver: BroadcastReceiver? = null
+
+    private fun registerUserUnlockedReceiver() {
+        if (userUnlockedReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_USER_UNLOCKED) {
+                    Log.i(TAG, "ACTION_USER_UNLOCKED received — initializing CE storage and observers.")
+                    try {
+                        unregisterReceiver(this)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "userUnlockedReceiver inline unregister error: ${e.message}")
+                    }
+                    userUnlockedReceiver = null
+                    initCeStorageAndObservers()
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_USER_UNLOCKED)
         try {
-            val packageFilter = android.content.IntentFilter().apply {
-                addAction(Intent.ACTION_PACKAGE_ADDED)
-                addDataScheme("package")
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(newAppInstallReceiver, packageFilter, Context.RECEIVER_EXPORTED)
-            } else {
-                registerReceiver(newAppInstallReceiver, packageFilter)
-            }
-            isNewAppReceiverRegistered = true
-            Log.i(TAG, "Dynamic NewAppInstallReceiver registered successfully.")
+            registerReceiver(receiver, filter)
+            userUnlockedReceiver = receiver
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to register dynamic NewAppInstallReceiver", e)
+            Log.e(TAG, "Failed to register USER_UNLOCKED receiver: ${e.message}", e)
         }
-
-        lastFocusGuardPickedUpTimestamp = 0L
-        lastFocusGuardTouchTimestamp = 0L
-        lastFocusGuardPopupBlockTimestamp = 0L
-
-        // SWEEP ON RECONNECT: Delayed by 3s on every connect.
-        // Live events arrive within < 100ms — the 10s cooldown handles them.
-        // Sweep runs at 3s to catch any blocked app that was open BEFORE the service started.
-        mainHandler.postDelayed({ sweepActiveWindowOnConnect() }, 3000L)
     }
 
     private fun sweepActiveWindowOnConnect() {
@@ -465,14 +547,20 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             }
             isRefreshCachesReceiverRegistered = false
         }
-        try {
-            com.focusguard.app.recovery.AccessibilityRecoveryHelper.restoreProtectionFast(
-                context = applicationContext,
-                source = "AccessibilityService:onUnbind",
-                repository = repository
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error triggering recovery on unbind: ${e.message}")
+        val isProtectionActive = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+        if (isProtectionActive) {
+            try {
+                com.focusguard.app.recovery.AccessibilityRecoveryHelper.restoreProtectionFast(
+                    context = applicationContext,
+                    source = "AccessibilityService:onUnbind",
+                    repository = repository
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error triggering recovery on unbind: ${e.message}")
+            }
+        } else {
+            Log.i(TAG, "AccessibilityService: onUnbind called while uninstall protection is disabled. Allowing service to stop cleanly.")
+            com.focusguard.app.worker.AccessibilityHealthWorker.cancelReactivationNotification(applicationContext)
         }
         return super.onUnbind(intent)
     }
@@ -508,6 +596,10 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 Log.w(TAG, "Error unregistering timeChangeReceiver", e)
             }
             isTimeReceiverRegistered = false
+        }
+        userUnlockedReceiver?.let {
+            try { unregisterReceiver(it) } catch (e: Exception) { Log.d(TAG, "userUnlockedReceiver unregister error: ${e.message}") }
+            userUnlockedReceiver = null
         }
         instanceRef = null
         mindfulExpiryRunnables.values.forEach { mainHandler.removeCallbacks(it) }
@@ -599,7 +691,9 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 try {
                     val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
                     am?.killBackgroundProcesses(pkg)
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.d(TAG, "killBackgroundProcesses error: ${e.message}")
+                }
                 triggerBlock(
                     sourcePackage = pkg,
                     reason = "App Cloner Blocked",
@@ -644,9 +738,16 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                         e.text.any { it.toString().contains("FocusGuard", ignoreCase = true) || it.toString().contains("App clone", ignoreCase = true) } ||
                         (e.contentDescription?.contains("FocusGuard", ignoreCase = true) == true)
 
+                        val hasFgInPopup = overlayRootNode?.let { node ->
+                            val fgNodes = node.findAccessibilityNodeInfosByText("FocusGuard")
+                            val found = fgNodes.isNotEmpty()
+                            fgNodes.forEach { SafeNodeUtils.safeRecycle(it) }
+                            found
+                        } ?: false
+
                         val isFgEvent = eventTextMatchesFg ||
                                 (overlayRootNode != null && isUninstallConfirmationForFocusGuard(overlayRootNode)) ||
-                                (hasLauncherPopup && (overlayRootNode?.findAccessibilityNodeInfosByText("FocusGuard")?.isEmpty() == true))
+                                (hasLauncherPopup && hasFgInPopup)
 
                         if (isFgEvent) {
                             Log.w(TAG, "Launcher interaction specifically targeting FocusGuard detected during overlay -> dismissing immediately ($pkg)")
@@ -712,7 +813,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     lastShadeCollapseTimestamp = now
                     Log.w(TAG, "Notification shade / quick settings / recents intercepted during Deep Focus -> Collapsing!")
                     performGlobalAction(GLOBAL_ACTION_BACK)
-                    com.focusguard.app.ui.session.SessionLockActivity.start(this)
+                    com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
                 }
                 return
             }
@@ -748,7 +849,9 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     oemScanSuppressUntilStatic.set(android.os.SystemClock.elapsedRealtime() + 12_000L)
                     Log.i(TAG, "GUARD 1.15a: OEM security manager ($pkg) detected with transient accessibility clear — scan window armed for 12s")
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.d(TAG, "ENABLED_ACCESSIBILITY_SERVICES query error: ${e.message}")
+            }
         }
 
         // ── GUARD 1.155: ZERO-TOLERANCE ANTI-CLONING & DUAL APPS SHIELD (Layer 1: Cloner Blacklist) ─
@@ -799,7 +902,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 onIntercept = { sourcePkg, reason, targetName, desc ->
                     if (sessionBlockManager.isSessionCurrentlyActive()) {
                         triggerBlockHaptic()
-                        com.focusguard.app.ui.session.SessionLockActivity.start(this)
+                        com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
                         dismissUnauthorizedAppInDeepFocus(sourcePkg)
                     } else {
                         val appLabel = getCachedAppLabel(sourcePkg)
@@ -828,7 +931,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     lastDeepFocusReassertTimestamp = nowRt
                     Log.w(TAG, "DEEP FOCUS INTERCEPT: Unauthorized app/launcher blocked: $pkg -> Reasserting Kiosk Lock Screen")
                     triggerBlockHaptic()
-                    com.focusguard.app.ui.session.SessionLockActivity.start(this)
+                    com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
                     dismissUnauthorizedAppInDeepFocus(pkg)
                 }
                 return
@@ -984,13 +1087,22 @@ class FocusGuardAccessibilityService : AccessibilityService() {
         }
 
         // C. Direct event-based interception for long-press
+        val sourceNode = try { e.source } catch (_: Exception) { null }
+        val sourceBounds = android.graphics.Rect().also { r ->
+            sourceNode?.getBoundsInScreen(r)
+        }
+        val sourceBoundsMatchesFg = lastDesktopFocusGuardBounds != null &&
+                sourceBounds.width() > 0 &&
+                android.graphics.Rect.intersects(sourceBounds, lastDesktopFocusGuardBounds!!)
+
         val eventTextMatchesFocusGuard = e.text.any { it.toString().contains("FocusGuard", ignoreCase = true) } ||
                 (e.contentDescription?.contains("FocusGuard", ignoreCase = true) == true) ||
-                (try { e.source } catch (_: Exception) { null }?.let { s ->
+                (sourceNode?.let { s ->
                     val st = s.text?.toString() ?: ""
                     val sd = s.contentDescription?.toString() ?: ""
                     st.contains("FocusGuard", ignoreCase = true) || sd.contains("FocusGuard", ignoreCase = true)
-                } ?: false)
+                } ?: false) ||
+                sourceBoundsMatchesFg
 
         if (e.eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
             if (eventTextMatchesFocusGuard) {
@@ -1000,21 +1112,18 @@ class FocusGuardAccessibilityService : AccessibilityService() {
 
                 if (protectionWanted) {
                     Log.w(TAG, "BLOCKING direct long-press on FocusGuard in launcher ($pkg)!")
-                    lastFocusGuardLongPressTimestamp = 0L
-                    lastFocusGuardTouchTimestamp = 0L
-                    lastTargetedAppLabel = ""
                     lastFocusGuardPopupBlockTimestamp = nowRealtime
                     lastDesktopFocusGuardTimestamp = nowRealtime
 
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    performGlobalAction(GLOBAL_ACTION_HOME)
 
-                    triggerBlock(
-                        sourcePackage = pkg,
-                        reason = "Launcher Long-Press on FocusGuard",
-                        blockType = OverlayBlockType.UNINSTALL_ATTEMPT,
-                        targetName = "FocusGuard Uninstall Protection",
-                        description = "Uninstalling FocusGuard is protected by friction challenge."
-                    )
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(
+                            this,
+                            "🛡️ FocusGuard is protected from uninstall & cloning.",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
 
                     scope.launch {
                         repository.logEvent(EventType.UNINSTALL_ATTEMPT, "Target=FocusGuard Launcher | Pkg=$pkg | Launcher Long-Press on FocusGuard")
@@ -1026,6 +1135,84 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             if (eventTextMatchesFocusGuard) {
                 lastFocusGuardTouchTimestamp = nowRealtime
                 lastTargetedAppLabel = "FocusGuard"
+            }
+
+            // 🛡️ PRE-EMPTIVE LAUNCHER CLICK INTERCEPT (Eliminate Fast-Click Race Condition & App Clone Bypass)
+            if (protectionWanted) {
+                val clickedNode = try { e.source } catch (_: Exception) { null }
+                val clickedText = (e.text.joinToString(" ") + " " + (e.contentDescription ?: "") + " " + (clickedNode?.text ?: "") + " " + (clickedNode?.contentDescription ?: "")).lowercase()
+
+                val isCloneClick = clickedText.contains("app clone") ||
+                        clickedText.contains("clone") ||
+                        clickedText.contains("cloner") ||
+                        clickedText.contains("dual app") ||
+                        clickedText.contains("twin app") ||
+                        clickedText.contains("द्वि-ऐप") ||
+                        clickedText.contains("क्लोन")
+
+                // 🚨 UNCONDITIONAL CLONE BLOCK: No app should ever be cloned from launcher when uninstall protection is active!
+                if (isCloneClick) {
+                    Log.w(TAG, "PREEMPTIVE BLOCK: Direct click on 'App Clone' in launcher ($pkg)!")
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(
+                            this,
+                            "🛡️ App cloning is prohibited while FocusGuard protection is active.",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+
+                    scope.launch {
+                        repository.logEvent(
+                            EventType.UNINSTALL_ATTEMPT,
+                            "Target=FocusGuard Launcher | Pkg=$pkg | Preemptive Launcher Clone Block"
+                        )
+                    }
+                    return true
+                }
+
+                val isUninstallClick = clickedText.contains("uninstall") ||
+                        clickedText.contains("delete") ||
+                        clickedText.contains("remove") ||
+                        clickedText.contains("अनइंस्टॉल") ||
+                        clickedText.contains("desinstalar")
+
+                val isTargetingFocusGuard = (lastTargetedAppLabel == "FocusGuard" && (nowRealtime - lastFocusGuardTouchTimestamp < 30_000L)) ||
+                        (rootNode != null && (
+                            rootNode.findAccessibilityNodeInfosByText("FocusGuard").isNotEmpty() ||
+                            rootNode.findAccessibilityNodeInfosByText("com.focusguard.app").isNotEmpty()
+                        )) ||
+                        (clickedNode?.parent?.let { p ->
+                            val pt = p.text?.toString() ?: ""
+                            val pd = p.contentDescription?.toString() ?: ""
+                            pt.contains("FocusGuard", ignoreCase = true) || pd.contains("FocusGuard", ignoreCase = true)
+                        } == true) ||
+                        (lastDesktopFocusGuardBounds != null && (nowRealtime - lastDesktopFocusGuardTimestamp < 60_000L))
+
+                if (isUninstallClick && isTargetingFocusGuard) {
+                    Log.w(TAG, "PREEMPTIVE BLOCK: Direct click on 'Uninstall' for FocusGuard in launcher ($pkg)!")
+                    lastTargetedAppLabel = ""
+                    lastFocusGuardTouchTimestamp = 0L
+
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(
+                            this,
+                            "🛡️ FocusGuard is protected from Uninstall.",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+
+                    scope.launch {
+                        repository.logEvent(
+                            EventType.UNINSTALL_ATTEMPT,
+                            "Target=FocusGuard Launcher | Pkg=$pkg | Preemptive Launcher Uninstall Block"
+                        )
+                    }
+                    return true
+                }
             }
         }
 
@@ -1042,6 +1229,8 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("Delete") }
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("App info") }
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("App clone") }
+                    .ifEmpty { rootNode.findAccessibilityNodeInfosByText("Clone") }
+                    .ifEmpty { rootNode.findAccessibilityNodeInfosByText("क्लोन") }
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("Remove") }
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("अनइंस्टॉल") }
                     .ifEmpty { rootNode.findAccessibilityNodeInfosByText("ऐप जानकारी") }
@@ -1051,46 +1240,46 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             }
 
             val hasLauncherPopup = popupNodes.isNotEmpty() || actionNodes.isNotEmpty() ||
-                    (containsKeywords(rootNode, "App info", "Share") && containsKeywords(rootNode, "Uninstall", "Delete", "App clone")) ||
                     (containsKeywords(rootNode, "App info") && containsKeywords(rootNode, "Uninstall", "Delete"))
 
             if (hasLauncherPopup) {
                 var isThisPopupForFocusGuard = false
                 val popupAnchorNode = popupNodes.firstOrNull() ?: actionNodes.firstOrNull()
 
-                // Check if popup specifically contains "FocusGuard"
+                // Check 1: Check if popup specifically contains "FocusGuard" or targets FocusGuard
                 if (popupAnchorNode != null) {
                     val popupText = extractScreenTextFast(popupAnchorNode)
-                    if (popupText.contains("FocusGuard", ignoreCase = true)) {
+                    if (popupText.contains("FocusGuard", ignoreCase = true) || popupText.contains("com.focusguard.app", ignoreCase = true)) {
                         isThisPopupForFocusGuard = true
                     }
                 }
 
-                // Check if FocusGuard icon is lifted from desktop
+                // Check 2: Inspect whole rootNode specifically for FocusGuard popup header
                 if (!isThisPopupForFocusGuard) {
-                    if (!isFgVisibleOnDesktop) {
-                        val wasRecentlyOnDesktop = lastDesktopFocusGuardTimestamp > 0L &&
-                                (nowRealtime - lastDesktopFocusGuardTimestamp < 60_000L)
-                        val wasRecentlyBlocked = lastFocusGuardPopupBlockTimestamp > 0L &&
-                                (nowRealtime - lastFocusGuardPopupBlockTimestamp < 30_000L)
-
-                        if (wasRecentlyOnDesktop || wasRecentlyBlocked) {
-                            if (popupAnchorNode != null && lastDesktopFocusGuardBounds != null) {
-                                val popupRect = android.graphics.Rect()
-                                popupAnchorNode.getBoundsInScreen(popupRect)
-                                val fg = lastDesktopFocusGuardBounds!!
-
-                                val isHorizontallyAligned = popupRect.left < fg.right + 250 && popupRect.right > fg.left - 250
-                                val isVerticallyClose = Math.abs(popupRect.centerY() - fg.centerY()) < 800
-
-                                if (isHorizontallyAligned && isVerticallyClose) {
-                                    isThisPopupForFocusGuard = true
-                                }
-                            } else {
-                                isThisPopupForFocusGuard = true
-                            }
-                        }
+                    val fgNodes = rootNode.findAccessibilityNodeInfosByText("FocusGuard")
+                    if (fgNodes.isNotEmpty()) {
+                        isThisPopupForFocusGuard = true
+                        fgNodes.forEach { SafeNodeUtils.safeRecycle(it) }
                     }
+                }
+
+                // Check 3: SPATIAL BOUNDS CHECK - In Android launchers, the popup is positioned directly adjacent to the touched icon!
+                if (!isThisPopupForFocusGuard && popupAnchorNode != null && lastDesktopFocusGuardBounds != null &&
+                    (nowRealtime - lastDesktopFocusGuardTimestamp < 60_000L)) {
+                    val popupRect = android.graphics.Rect()
+                    popupAnchorNode.getBoundsInScreen(popupRect)
+                    val horizontalOverlap = popupRect.left < lastDesktopFocusGuardBounds!!.right && popupRect.right > lastDesktopFocusGuardBounds!!.left
+                    val verticalProximity = Math.abs(popupRect.top - lastDesktopFocusGuardBounds!!.bottom) < 600 ||
+                            Math.abs(lastDesktopFocusGuardBounds!!.top - popupRect.bottom) < 600
+                    if (horizontalOverlap && verticalProximity) {
+                        Log.d(TAG, "Popup matches FocusGuard desktop icon spatial coordinates!")
+                        isThisPopupForFocusGuard = true
+                    }
+                }
+
+                // Check 4: Was FocusGuard touched/long-pressed within the last 30 seconds?
+                if (!isThisPopupForFocusGuard && (lastFocusGuardTouchTimestamp > 0L && (nowRealtime - lastFocusGuardTouchTimestamp < 30_000L))) {
+                    isThisPopupForFocusGuard = true
                 }
 
                 popupNodes.forEach { SafeNodeUtils.safeRecycle(it) }
@@ -1098,19 +1287,15 @@ class FocusGuardAccessibilityService : AccessibilityService() {
 
                 if (isThisPopupForFocusGuard) {
                     Log.w(TAG, "REACTIVE BLOCK: FocusGuard launcher popup intercepted and dismissed ($pkg)!")
-                    lastFocusGuardPopupBlockTimestamp = nowRealtime
-                    lastDesktopFocusGuardTimestamp = nowRealtime
-                    lastFocusGuardPickedUpTimestamp = 0L
+                    performGlobalAction(GLOBAL_ACTION_HOME)
 
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-
-                    triggerBlock(
-                        sourcePackage = pkg,
-                        reason = "Launcher Hold on FocusGuard",
-                        blockType = OverlayBlockType.UNINSTALL_ATTEMPT,
-                        targetName = "FocusGuard Uninstall Protection",
-                        description = "Uninstalling FocusGuard is protected by friction challenge."
-                    )
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(
+                            this,
+                            "🛡️ FocusGuard is protected from uninstall & cloning.",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
 
                     scope.launch {
                         repository.logEvent(EventType.UNINSTALL_ATTEMPT, "Target=FocusGuard Launcher | Pkg=$pkg | Launcher Hold Reactive Block")
@@ -1173,6 +1358,23 @@ class FocusGuardAccessibilityService : AccessibilityService() {
         }
 
         val isPlayStore = pkg == "com.android.vending"
+        val eventText = e.text.joinToString(" ")
+        val isFastFgTarget = eventText.contains("FocusGuard", ignoreCase = true) ||
+                eventText.contains("com.focusguard.app", ignoreCase = true)
+
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isFastFgTarget) {
+            Log.w(TAG, "PREEMPTIVE BLOCK: Instant pre-render kill for PackageInstaller targeting FocusGuard ($pkg)")
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            handleSecurityTamper(
+                sourcePackage = pkg,
+                reason = if (isPlayStore) "Google Play Store Uninstall Targeting FocusGuard" else "Package Installer Targeting FocusGuard",
+                targetName = "FocusGuard Uninstall",
+                blockType = OverlayBlockType.UNINSTALL_ATTEMPT,
+                customToastMessage = "🚫 Uninstalling FocusGuard is protected. Complete the friction challenge in the app."
+            )
+            return true
+        }
+
         if (rootNode != null && (isUninstallConfirmationForFocusGuard(rootNode) ||
                     containsKeywords(rootNode, "FocusGuard", "com.focusguard.app", maxDepth = 10))) {
             handleSecurityTamper(
@@ -1329,7 +1531,6 @@ class FocusGuardAccessibilityService : AccessibilityService() {
 
         // ── GUARD 4.3: APP INFO / FORCE STOP / CLEAR STORAGE TAMPER ──
         if (protectionWanted) {
-            val targetsFocusGuard = hasText(screenText, "focusguard", "com.focusguard.app")
             val isDeactivationTamper = hasText(
                 screenText,
                 "deactivate",
@@ -1337,23 +1538,18 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                 "device administrator"
             ) || className.contains("DeviceAdmin", ignoreCase = true)
 
-            val isAppDetailsTamper = hasText(
-                screenText,
-                "uninstall",
-                "force stop",
-                "clear data",
-                "clear storage",
-                "manage space",
-                "storage & cache",
-                "internal storage"
-            ) || className.contains("Storage", ignoreCase = true) ||
-                className.contains("ManageSpaceActivity", ignoreCase = true)
+            val targetsFocusGuardInAdmin = isDeactivationTamper && hasText(screenText, "focusguard", "com.focusguard.app")
 
-            if (targetsFocusGuard && (isDeactivationTamper || isAppDetailsTamper ||
-                        className.contains("InstalledAppDetails", ignoreCase = true) ||
-                        className.contains("AppInfo", ignoreCase = true) ||
-                        className.contains("AppStorageSettings", ignoreCase = true) ||
-                        className.contains("ManageSpaceActivity", ignoreCase = true))) {
+            val isAppDetailsScreen = className.contains("InstalledAppDetails", ignoreCase = true) ||
+                    className.contains("AppInfo", ignoreCase = true) ||
+                    className.contains("AppStorageSettings", ignoreCase = true) ||
+                    className.contains("ManageSpaceActivity", ignoreCase = true) ||
+                    className.contains("AppButtonsPreferenceController", ignoreCase = true) ||
+                    hasText(screenText, "force stop", "clear data", "clear storage", "manage space")
+
+            val isSpecificallyFocusGuardApp = isAppDetailsScreen && isFocusGuardAppDetailsPage(rootNode)
+
+            if (targetsFocusGuardInAdmin || isSpecificallyFocusGuardApp) {
                 val targetName = if (isDeactivationTamper) "Device Administrator" else "Security Settings"
                 val tamperBlockType = if (isDeactivationTamper) OverlayBlockType.SETTINGS_TAMPER else OverlayBlockType.UNINSTALL_ATTEMPT
                 Log.w(TAG, "BLOCKING settings tamper: $targetName")
@@ -1409,7 +1605,8 @@ class FocusGuardAccessibilityService : AccessibilityService() {
             val isProtectionActive = protectionWanted
             val isSessionActive = sessionBlockManager.isSessionCurrentlyActive()
             if (isProtectionActive || isSessionActive) {
-                val isDualAppScreen = AntiClonerEngine.isDualAppsSettingsScreen(rootNode, className, pkg)
+                val isVivoDoubleInstance = pkg == "com.vivo.doubleinstance" || className.contains("DoubleInstance", ignoreCase = true)
+                val isDualAppScreen = isVivoDoubleInstance || AntiClonerEngine.isDualAppsSettingsScreen(rootNode, className, pkg)
                 if (isDualAppScreen) {
                     val appLabel = getCachedAppLabel(pkg)
                     Log.w(TAG, "ANTI-CLONING INTERCEPT: OEM Dual Apps Settings blocked: $pkg ($appLabel)")
@@ -1419,16 +1616,35 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                         targetName = "App Cloning Prohibited",
                         customToastMessage = "🚫 App cloning and dual apps are prohibited while FocusGuard protection is active."
                     )
+                    return true
                 }
+            }
+        }
+        // ── GUARD 4.6: PRIVATE DNS SETTINGS INTERCEPTION (Layer 3 — Adult Content Shield) ──
+        // When Adult Content Shield is ON, block navigation to Private DNS settings.
+        // A custom DoH/DoT hostname in Private DNS would silently bypass the Layer 1 DNS VPN.
+        if (repository.isFastAdultContentBlockEnabled()) {
+            val isPrivateDnsScreen = when {
+                (pkg == "com.android.settings" || pkg.contains("settings", ignoreCase = true)) -> {
+                    className.contains("PrivateDns", ignoreCase = true) ||
+                    (rootNode != null && containsKeywords(rootNode, "Private DNS", "Private dns"))
+                }
+                else -> false
+            }
+            if (isPrivateDnsScreen) {
+                Log.w(TAG, "GUARD 4.6: Private DNS settings intercepted — adult content shield active")
+                handleSecurityTamper(
+                    sourcePackage = pkg,
+                    reason = "Private DNS Settings Blocked",
+                    targetName = "🔞 Adult Content Shield",
+                    customToastMessage = "⛔ Changing Private DNS is blocked while the Adult Content Shield is active."
+                )
             }
         }
 
         return true
     }
 
-    /**
-     * Specialized Fast-Path Handler for Target Applications (User Apps, Blocklist, Limits, Reels, Browsers, Keywords).
-     */
     private fun processTargetAppEvent(
         rootNode: AccessibilityNodeInfo?,
         e: AccessibilityEvent,
@@ -1527,7 +1743,15 @@ class FocusGuardAccessibilityService : AccessibilityService() {
         }
 
         // ── 1. FAST-PATH: INSTANT HARD APP BLOCKER, EXCEEDED TIME LIMITS & SCHEDULES (0ms latency) ─
-        val isHardBlocked = blockedPackages.contains(pkg) || blockedPackages.contains(pkg.lowercase()) || repository.isFastBlockedApp(pkg)
+        val eventContext = com.focusguard.app.core.model.EventContext(
+            packageName = pkg,
+            className = className,
+            eventType = e.eventType,
+            monotonicTimeMs = nowRealtime
+        )
+        val engineDecision = blockDecisionEngine.evaluate(eventContext, rulesSnapshotHolder.current)
+        val isEngineBlocked = engineDecision is com.focusguard.app.core.model.BlockDecision.Block
+        val isHardBlocked = isEngineBlocked || blockedPackages.contains(pkg) || blockedPackages.contains(pkg.lowercase()) || repository.isFastBlockedApp(pkg)
         val isTimeLimitExceeded = repository.isFastTimeLimitExceeded(pkg)
         val activeSchedules = repository.getFastActiveSchedules()
         val scheduleBlock = if (activeSchedules.isNotEmpty()) {
@@ -2133,6 +2357,34 @@ class FocusGuardAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Determines whether the active Settings App Info page specifically belongs to FocusGuard.
+     * Prevents false-positive clear data / storage blocks when viewing third-party apps.
+     */
+    private fun isFocusGuardAppDetailsPage(rootNode: AccessibilityNodeInfo?): Boolean {
+        if (rootNode == null) return false
+        val titleIds = listOf(
+            "com.android.settings:id/entity_header_title",
+            "android:id/title",
+            "com.android.settings:id/app_title",
+            ":id/entity_header_title",
+            ":id/app_name",
+            ":id/title"
+        )
+        for (id in titleIds) {
+            try {
+                val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
+                val matches = nodes.any { node ->
+                    val text = node.text?.toString() ?: ""
+                    text.equals("FocusGuard", ignoreCase = true) || text.equals("com.focusguard.app", ignoreCase = true)
+                }
+                nodes.forEach { SafeNodeUtils.safeRecycle(it) }
+                if (matches) return true
+            } catch (_: Exception) {}
+        }
+        return false
+    }
+
+    /**
      * Determines whether the current active window or dialog is an uninstall/removal prompt targeting FocusGuard.
      * Works natively across all Android versions and OEM skins (Vivo, Samsung, Xiaomi, Pixel, etc.).
      */
@@ -2402,7 +2654,9 @@ class FocusGuardAccessibilityService : AccessibilityService() {
                     v?.vibrate(45)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Haptic vibration error: ${e.message}")
+        }
     }
 
     private fun triggerBlock(
@@ -2588,17 +2842,67 @@ class FocusGuardAccessibilityService : AccessibilityService() {
     override fun onKeyEvent(event: KeyEvent?): Boolean {
         if (event == null) return false
 
+        val keyCode = event.keyCode
+        val isVolumeKey = keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+                keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+                keyCode == KeyEvent.KEYCODE_VOLUME_MUTE
+
+        // ⚡ ZERO-LATENCY FAST-PATH FOR HARDWARE VOLUME KEYS (AGENTS Rule 5 Invariant):
+        // Hardware volume keys should NEVER experience latency during normal device usage.
+        // If no block overlay is displaying on screen and no alert siren is active,
+        // instantly return super.onKeyEvent(event) with 0ms delay and zero Binder IPC calls.
+        // This guarantees InputDispatcher receives an immediate acknowledgement, eliminating
+        // key repeat auto-ramp and preventing multi-step jumps on single taps.
+        if (isVolumeKey) {
+            val isOverlayShowing = overlayManager.isOverlayShowing
+            val isAlertActive = audioManagerHelper.isAlertActive()
+            if (!isOverlayShowing && !isAlertActive) {
+                return super.onKeyEvent(event)
+            }
+        }
+
+        // 🚨 EMERGENCY & IN-CALL IMMUNITY (Task 5 & Safety Invariant) 🚨
+        // Never intercept, mute, or consume any hardware keys during active phone or VoIP calls.
+        if (sessionBlockManager.isInPhoneCall() || audioManagerHelper.isInCall()) {
+            return super.onKeyEvent(event)
+        }
+
         val isOverlayShowing = overlayManager.isOverlayShowing
         val isDeepFocus = sessionBlockManager.isSessionCurrentlyActive()
         val currentPkg = currentForegroundPackage
         val isAllowedTool = currentPkg != null && (sessionBlockManager.isAlwaysAllowedPackage(currentPkg) || sessionBlockManager.suitcasePackages.contains(currentPkg.lowercase()))
 
+        // 🚨 AUDIO STREAM PROTECTION: Prevent muting alert sirens or focus alarms (Task 2) 🚨
+        if (audioManagerHelper.isAlertActive()) {
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    audioManagerHelper.ensureAudibleAlertVolume(android.media.AudioManager.STREAM_ALARM)
+                    Log.d(TAG, "Hardware volume-down consumed & alarm volume locked during active alert")
+                }
+                return true
+            }
+        }
+
+        // 🚨 OVERLAY KEY ISOLATION: Prevent volume key combinations from interacting with background apps 🚨
+        if (isOverlayShowing && isVolumeKey) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) {
+                    audioManagerHelper.ensureAudibleAlertVolume(android.media.AudioManager.STREAM_ALARM)
+                }
+                Log.d(TAG, "Hardware volume key $keyCode consumed to isolate block overlay window")
+            }
+            return true
+        }
+
+        // 🚨 NAVIGATION KEY ISOLATION: Back, App-Switch, Home 🚨
         if ((isOverlayShowing || (isDeepFocus && !isAllowedTool)) &&
-            (event.keyCode == KeyEvent.KEYCODE_BACK ||
-             event.keyCode == KeyEvent.KEYCODE_APP_SWITCH ||
-             event.keyCode == KeyEvent.KEYCODE_HOME)
+            (keyCode == KeyEvent.KEYCODE_BACK ||
+             keyCode == KeyEvent.KEYCODE_APP_SWITCH ||
+             keyCode == KeyEvent.KEYCODE_HOME)
         ) {
-            Log.d(TAG, "Hardware key ${event.keyCode} strictly consumed (overlayShowing=$isOverlayShowing, deepFocus=$isDeepFocus)")
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                Log.d(TAG, "Hardware key $keyCode strictly consumed (overlayShowing=$isOverlayShowing, deepFocus=$isDeepFocus)")
+            }
             return true
         }
 
@@ -2742,6 +3046,43 @@ class FocusGuardAccessibilityService : AccessibilityService() {
         fun updateDeviceAdminCache(isActive: Boolean) {
             instanceRef?.get()?.cachedDeviceAdminActive?.set(isActive)
             Log.d(TAG, "Device admin cache explicitly updated: $isActive")
+        }
+
+        /**
+         * Safely disables the Accessibility Service so the app can be uninstalled cleanly.
+         */
+        fun disableAccessibilityService(context: Context) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    instanceRef?.get()?.disableSelf()
+                    Log.i(TAG_COMPANION, "disableSelf() called on FocusGuardAccessibilityService")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG_COMPANION, "disableSelf() failed: ${e.message}")
+            }
+
+            try {
+                if (com.focusguard.app.recovery.AccessibilityRecoveryHelper.canWriteSecureSettings(context)) {
+                    val targetComponent = "${context.packageName}/${FocusGuardAccessibilityService::class.java.name}"
+                    val shortComponent = "${context.packageName}/.service.FocusGuardAccessibilityService"
+                    val contentResolver = context.contentResolver
+                    val current = android.provider.Settings.Secure.getString(
+                        contentResolver,
+                        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                    ) ?: ""
+                    val updated = current.split(":")
+                        .filter { it.isNotBlank() && !it.equals(targetComponent, true) && !it.equals(shortComponent, true) }
+                        .joinToString(":")
+                    android.provider.Settings.Secure.putString(
+                        contentResolver,
+                        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                        updated
+                    )
+                    Log.i(TAG_COMPANION, "Removed FocusGuard from ENABLED_ACCESSIBILITY_SERVICES programmatically")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG_COMPANION, "Could not remove from Secure.Settings: ${e.message}")
+            }
         }
     }
 }

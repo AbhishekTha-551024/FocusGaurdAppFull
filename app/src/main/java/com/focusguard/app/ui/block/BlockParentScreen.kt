@@ -22,14 +22,16 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.focusguard.app.data.db.BlockedKeywordEntity
-import com.focusguard.app.data.model.AppInfo
-import com.focusguard.app.ui.blocker.AppBlockerScreen
-import com.focusguard.app.ui.blocker.AppBlockerUiState
-import com.focusguard.app.ui.keywordblocker.KeywordBlockerScreen
-import com.focusguard.app.ui.keywordblocker.KeywordBlockerUiState
-import com.focusguard.app.ui.mindful.MindfulAppsScreen
-import com.focusguard.app.ui.mindful.MindfulAppsUiState
+import com.focusguard.app.core.database.entity.BlockedKeywordEntity
+import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.AppInfo
+import com.focusguard.app.feature.appblocker.ui.AppBlockerScreen
+import com.focusguard.app.feature.appblocker.ui.AppBlockerUiState
+import com.focusguard.app.feature.keywordblocker.domain.model.BlockedKeyword
+import com.focusguard.app.feature.keywordblocker.ui.KeywordBlockerScreen
+import com.focusguard.app.feature.keywordblocker.ui.KeywordBlockerUiState
+import com.focusguard.app.feature.mindful.ui.MindfulAppsScreen
+import com.focusguard.app.feature.mindful.ui.MindfulAppsUiState
 import com.focusguard.app.ui.theme.FocusGuardTheme
 import com.focusguard.app.utils.AppIconLoader
 import androidx.compose.material.icons.filled.SelfImprovement
@@ -50,7 +52,7 @@ fun BlockParentScreen(
     onAppChallengeSuccess: (Context) -> Unit = {},
     onAppCancelChallenge: () -> Unit = {},
     onAppCancelPendingChange: (Long) -> Unit = {},
-    onAppActivateChallenge: () -> Unit = {},
+    onAppActivateChallenge: (ChallengeType, String) -> Unit = { _, _ -> },
     onAppDismissAccountability: () -> Unit = {},
     onMindfulSearchQueryChange: (String) -> Unit = {},
     onToggleMindfulApp: (AppInfo, Boolean) -> Unit = { _, _ -> },
@@ -58,19 +60,19 @@ fun BlockParentScreen(
     onDismissConfirmAddMindfulApp: () -> Unit = {},
     onMindfulChallengeSuccess: (Context) -> Unit = {},
     onMindfulCancelChallenge: () -> Unit = {},
-    onMindfulActivateChallenge: () -> Unit = {},
+    onMindfulActivateChallenge: (ChallengeType, String) -> Unit = { _, _ -> },
     onMindfulDismissAccountability: () -> Unit = {},
     onUpdateMindfulAllowanceMinutes: (String, Int) -> Unit = { _, _ -> },
     onOpenMindfulJournal: () -> Unit = {},
     onDismissMindfulJournal: () -> Unit = {},
     onKeywordInputChange: (String) -> Unit,
     onAddKeyword: () -> Unit,
-    onRemoveKeyword: (BlockedKeywordEntity) -> Unit,
+    onRemoveKeyword: (BlockedKeyword) -> Unit,
     onKeywordSearchQueryChange: (String) -> Unit,
     onKeywordChallengeSuccess: (Context) -> Unit = {},
     onKeywordCancelChallenge: () -> Unit = {},
     onKeywordCancelPendingChange: (Long) -> Unit = {},
-    onKeywordActivateChallenge: () -> Unit = {},
+    onKeywordActivateChallenge: (ChallengeType, String) -> Unit = { _, _ -> },
     onKeywordDismissAccountability: () -> Unit = {}
 ) {
     val pagerState = rememberPagerState(initialPage = initialSubTab.coerceIn(0, 2), pageCount = { 3 })

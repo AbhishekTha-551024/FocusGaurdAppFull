@@ -1,10 +1,10 @@
 package com.focusguard.app.data.repository
 
 import android.util.Log
-import com.focusguard.app.data.db.PartnershipDao
-import com.focusguard.app.data.db.PartnershipEntity
-import com.focusguard.app.data.model.Partnership
-import com.focusguard.app.data.model.PartnershipStatus
+import com.focusguard.app.core.database.dao.PartnershipDao
+import com.focusguard.app.core.database.entity.PartnershipEntity
+import com.focusguard.app.core.model.Partnership
+import com.focusguard.app.core.model.PartnershipStatus
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -19,15 +19,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
-import com.focusguard.app.data.datastore.FocusGuardPreferences
-import com.focusguard.app.data.db.ChallengeType
+import com.focusguard.app.core.datastore.FocusGuardPreferences
+import com.focusguard.app.core.database.entity.ChallengeType
 
 private const val TAG = "PartnershipRepo"
 private const val COLLECTION_PARTNERSHIPS = "partnerships"
+private const val NETWORK_TIMEOUT_MS = 15_000L
 
 @Singleton
 class PartnershipRepository @Inject constructor(
@@ -53,8 +55,9 @@ class PartnershipRepository @Inject constructor(
         auth.addAuthStateListener { firebaseAuth ->
             val user = firebaseAuth.currentUser
             _currentUser.value = user
-            if (user != null && !user.email.isNullOrBlank()) {
-                startPartnershipSync(user.uid, user.email!!.lowercase())
+            val email = user?.email?.lowercase()
+            if (user != null && !email.isNullOrBlank()) {
+                startPartnershipSync(user.uid, email)
             } else {
                 stopPartnershipSync()
                 scope.launch { dao.clearAll() }
@@ -70,32 +73,7 @@ class PartnershipRepository @Inject constructor(
 
     fun isFastPartnershipActive(): Boolean = isPartnerActiveCache.get()
 
-    suspend fun signUpWithEmail(email: String, pass: String): Result<FirebaseUser> {
-        return try {
-            val result = auth.createUserWithEmailAndPassword(email.trim(), pass).await()
-            val user = result.user ?: throw IllegalStateException("User creation succeeded but user is null")
-            _currentUser.value = user
-            Result.success(user)
-        } catch (e: Exception) {
-            Log.e(TAG, "Sign up failed: " + e.message, e)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun signInWithEmail(email: String, pass: String): Result<FirebaseUser> {
-        return try {
-            val result = auth.signInWithEmailAndPassword(email.trim(), pass).await()
-            val user = result.user ?: throw IllegalStateException("Sign in succeeded but user is null")
-            _currentUser.value = user
-            Result.success(user)
-        } catch (e: Exception) {
-            Log.e(TAG, "Sign in failed: " + e.message, e)
-            Result.failure(e)
-        }
-    }
-
-    fun signOut() {
-        auth.signOut()
+    internal fun clearPartnershipSession() {
         _currentUser.value = null
         stopPartnershipSync()
         scope.launch { dao.clearAll() }
@@ -115,34 +93,39 @@ class PartnershipRepository @Inject constructor(
         }
 
         return try {
-            val docRef = firestore.collection(COLLECTION_PARTNERSHIPS).document()
-            val partnershipId = docRef.id
+            withTimeout(NETWORK_TIMEOUT_MS) {
+                val docRef = firestore.collection(COLLECTION_PARTNERSHIPS).document()
+                val partnershipId = docRef.id
 
-            val partnership = Partnership(
-                partnershipId = partnershipId,
-                ownerUserId = user.uid,
-                ownerEmail = ownerEmail,
-                partnerEmail = normalizedPartnerEmail,
-                partnerUserId = null,
-                status = PartnershipStatus.PENDING_INVITE.name,
-                createdAt = Timestamp.now()
-            )
-
-            docRef.set(partnership).await()
-
-            dao.insertOrUpdate(
-                PartnershipEntity(
+                val partnership = Partnership(
                     partnershipId = partnershipId,
                     ownerUserId = user.uid,
                     ownerEmail = ownerEmail,
                     partnerEmail = normalizedPartnerEmail,
                     partnerUserId = null,
-                    status = PartnershipStatus.PENDING_INVITE,
-                    createdAt = System.currentTimeMillis()
+                    status = PartnershipStatus.PENDING_INVITE.name,
+                    createdAt = Timestamp.now()
                 )
-            )
 
-            Result.success(partnershipId)
+                docRef.set(partnership).await()
+
+                dao.insertOrUpdate(
+                    PartnershipEntity(
+                        partnershipId = partnershipId,
+                        ownerUserId = user.uid,
+                        ownerEmail = ownerEmail,
+                        partnerEmail = normalizedPartnerEmail,
+                        partnerUserId = null,
+                        status = PartnershipStatus.PENDING_INVITE,
+                        createdAt = System.currentTimeMillis()
+                    )
+                )
+
+                Result.success(partnershipId)
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            Log.e(TAG, "Send invite timed out", e)
+            Result.failure(java.io.IOException("Network request timed out. Please check your connection."))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send invite: " + e.message, e)
             Result.failure(e)
@@ -152,14 +135,19 @@ class PartnershipRepository @Inject constructor(
     suspend fun acceptInvite(partnershipId: String): Result<Unit> {
         val user = auth.currentUser ?: return Result.failure(IllegalStateException("Must be logged in to accept invite"))
         return try {
-            firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
-                .update(
-                    mapOf(
-                        "partnerUserId" to user.uid,
-                        "status" to PartnershipStatus.ACTIVE.name
-                    )
-                ).await()
-            Result.success(Unit)
+            withTimeout(NETWORK_TIMEOUT_MS) {
+                firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
+                    .update(
+                        mapOf(
+                            "partnerUserId" to user.uid,
+                            "status" to PartnershipStatus.ACTIVE.name
+                        )
+                    ).await()
+                Result.success(Unit)
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            Log.e(TAG, "Accept invite timed out", e)
+            Result.failure(java.io.IOException("Network request timed out. Please check your connection."))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to accept invite: " + e.message, e)
             Result.failure(e)
@@ -168,10 +156,15 @@ class PartnershipRepository @Inject constructor(
 
     suspend fun declineInvite(partnershipId: String): Result<Unit> {
         return try {
-            firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
-                .update("status", PartnershipStatus.REVOKED.name).await()
-            dao.deleteById(partnershipId)
-            Result.success(Unit)
+            withTimeout(NETWORK_TIMEOUT_MS) {
+                firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
+                    .update("status", PartnershipStatus.REVOKED.name).await()
+                dao.deleteById(partnershipId)
+                Result.success(Unit)
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            Log.e(TAG, "Decline invite timed out", e)
+            Result.failure(java.io.IOException("Network request timed out. Please check your connection."))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decline invite: " + e.message, e)
             Result.failure(e)
@@ -180,14 +173,19 @@ class PartnershipRepository @Inject constructor(
 
     suspend fun revokePartnership(partnershipId: String): Result<Unit> {
         return try {
-            firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
-                .update("status", PartnershipStatus.REVOKED.name).await()
-            dao.deleteById(partnershipId)
-            isPartnerActiveCache.set(false)
-            if (prefs.syncChallengeType == ChallengeType.PARTNER) {
-                prefs.setChallengeType(ChallengeType.TYPING)
+            withTimeout(NETWORK_TIMEOUT_MS) {
+                firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
+                    .update("status", PartnershipStatus.REVOKED.name).await()
+                dao.deleteById(partnershipId)
+                isPartnerActiveCache.set(false)
+                if (prefs.syncChallengeType == ChallengeType.PARTNER) {
+                    prefs.setChallengeType(ChallengeType.TYPING)
+                }
+                Result.success(Unit)
             }
-            Result.success(Unit)
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            Log.e(TAG, "Revoke partnership timed out", e)
+            Result.failure(java.io.IOException("Network request timed out. Please check your connection."))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to revoke partnership: " + e.message, e)
             Result.failure(e)

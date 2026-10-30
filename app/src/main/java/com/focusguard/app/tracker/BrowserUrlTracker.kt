@@ -240,9 +240,10 @@ class BrowserUrlTracker @Inject constructor() {
             // Vivaldi
             "com.vivaldi.browser",
             "com.vivaldi.browser.snapshot",
-            // Tor Browser
-            "org.torproject.torbrowser",
-            "org.torproject.torbrowser_alpha",
+            // NOTE: Tor Browser is intentionally NOT in this list.
+            // Tor routes all traffic through its own encrypted relay network — DNS-layer
+            // filtering (Layer 1 VPN) cannot intercept it. Tor is treated as an unsupported
+            // browser and auto-blocked via the existing unsupported-browser guard instead.
             // Spin Safe Browser
             "com.nationaledtech.spinbrowser",
             "com.nationaledtech.spinbrowserplus",
@@ -259,10 +260,17 @@ class BrowserUrlTracker @Inject constructor() {
         )
 
         val KNOWN_UNSUPPORTED_BROWSERS = setOf(
-            "org.torproject.android",
+            // ── Tor / Onion Browsers (bypass DNS via encrypted relay — auto-block entirely) ──
+            "org.torproject.torbrowser",        // Tor Browser (stable)
+            "org.torproject.torbrowser_alpha",  // Tor Browser (alpha)
+            "org.torproject.android",           // Orbot / legacy Tor
+            "onion.torsearch",                  // Onion Search
+            // ── Puffin (cloud-proxy, bypasses local DNS) ──
             "com.cloudmosa.puffinfree",
             "com.cloudmosa.puffin",
+            // ── Firefox Focus (no URL-bar accessibility node exposure) ──
             "org.mozilla.focus",
+            // ── Other unsupported / obscure browsers ──
             "com.aloha.browser",
             "mark.via.gp",
             "com.ucmobile.intl",
@@ -279,7 +287,6 @@ class BrowserUrlTracker @Inject constructor() {
             "de.baumann.browser",
             "com.stoutner.privacybrowser.standard",
             "acr.browser.barebones",
-            "onion.torsearch",
             "com.android.browser",
             "com.z20.browser",
             "com.pure.browser",
@@ -385,7 +392,9 @@ class BrowserUrlTracker @Inject constructor() {
                 if (!sourceText.isNullOrBlank()) {
                     return sourceText
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         if (rootNode == null) return null
@@ -399,7 +408,9 @@ class BrowserUrlTracker @Inject constructor() {
                     return fText
                 }
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
 
         val universalSearchIds = listOf(
             "search_src_text",
@@ -424,7 +435,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         return searchDynamicEditableOrFocused(rootNode, maxDepth = 4, currentDepth = 0)
@@ -456,7 +469,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 3. Channel / Creator / Uploader Name
@@ -476,7 +491,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 4. Video Title
@@ -496,7 +513,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 5. Video Description
@@ -512,7 +531,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 6. Search Suggestions & Autocomplete Dropdown
@@ -528,7 +549,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 7. Voice Search Query
@@ -544,7 +567,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 8. Universal On-Screen Visible Text Scanner (Catches Channel Name, Title, and Captions even if View-IDs are obfuscated)
@@ -585,7 +610,9 @@ class BrowserUrlTracker @Inject constructor() {
                 collectVisibleYouTubeTexts(child, outList, maxDepth, currentDepth + 1)
                 SafeNodeUtils.safeRecycle(child)
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
     }
 
     fun extractYouTubeSearchQuery(rootNode: AccessibilityNodeInfo?): String? {
@@ -609,7 +636,9 @@ class BrowserUrlTracker @Inject constructor() {
                         return extractedText
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         return searchDynamicEditableOrFocused(rootNode, maxDepth = 4, currentDepth = 0)
@@ -632,7 +661,9 @@ class BrowserUrlTracker @Inject constructor() {
                 SafeNodeUtils.safeRecycle(child)
                 if (result != null) return result
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         return null
     }
 
@@ -658,7 +689,9 @@ class BrowserUrlTracker @Inject constructor() {
                         return extractedText
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         return boundedSearchForUrl(rootNode, maxDepth = 4, currentDepth = 0)
@@ -693,7 +726,9 @@ class BrowserUrlTracker @Inject constructor() {
                     for (n in nodes) SafeNodeUtils.safeRecycle(n)
                     return true
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         return false
@@ -734,7 +769,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 4. Autocomplete & search suggestion drop-downs in browsers
@@ -750,7 +787,9 @@ class BrowserUrlTracker @Inject constructor() {
                         }
                     }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
         }
 
         // 5. Focused Input in browser (e.g. Google Search input box on webpage)
@@ -763,7 +802,9 @@ class BrowserUrlTracker @Inject constructor() {
                     results.add(fText)
                 }
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
 
         // 6. On-Screen visible web text, article headings & titles (depth 6 scan for webpage DOM)
         collectVisibleBrowserTexts(rootNode, results, maxDepth = 6, currentDepth = 0)
@@ -795,7 +836,9 @@ class BrowserUrlTracker @Inject constructor() {
                 collectVisibleBrowserTexts(child, outList, maxDepth, currentDepth + 1)
                 SafeNodeUtils.safeRecycle(child)
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
     }
 
     private fun boundedSearchForUrl(node: AccessibilityNodeInfo?, maxDepth: Int, currentDepth: Int): String? {
@@ -819,7 +862,9 @@ class BrowserUrlTracker @Inject constructor() {
                 SafeNodeUtils.safeRecycle(child)
                 if (result != null) return result
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
 
         return null
     }
@@ -926,7 +971,9 @@ class BrowserUrlTracker @Inject constructor() {
                 SafeNodeUtils.safeRecycle(child)
                 if (found) return true
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.v("BrowserUrlTracker", "Node traversal error: ${t.message}")
+        }
 
         return false
     }

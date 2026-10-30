@@ -53,7 +53,9 @@ object MultiWindowGuard {
                         if (method.invoke(w) == true) {
                             hasPip = true
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        android.util.Log.d("MultiWindowGuard", "isInPictureInPicture reflection error: ${e.message}")
+                    }
                 }
             }
         }

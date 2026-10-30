@@ -7,7 +7,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
-import com.focusguard.app.data.datastore.FocusGuardPreferences
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.utils.BatteryOptimizationHelper
 import dagger.hilt.android.qualifiers.ApplicationContext

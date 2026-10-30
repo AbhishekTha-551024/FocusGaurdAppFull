@@ -1,7 +1,6 @@
 package com.focusguard.app.ui.protection
 
 import android.os.Build
-import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,8 +10,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Launch
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,9 +28,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.focusguard.app.ui.protection.components.OemAutostartCard
+import com.focusguard.app.ui.protection.components.OemBatteryOptimizationCard
+import com.focusguard.app.ui.protection.components.OemRecentAppsLockCard
 import com.focusguard.app.ui.theme.*
 import com.focusguard.app.utils.BatteryOptimizationHelper
-import com.focusguard.app.utils.OemBrand
 
 @Composable
 fun OemProtectionDialog(
@@ -46,8 +49,6 @@ fun OemProtectionDialog(
     var isBatteryIgnored by remember {
         mutableStateOf(BatteryOptimizationHelper.isBatteryOptimizationIgnored(context))
     }
-
-    var showRecentAppsGuide by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -122,7 +123,7 @@ fun OemProtectionDialog(
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Dynamic Headline (e.g. "Vivo detected: Auto-start allow karein")
+                        // Dynamic Headline
                         Text(
                             text = headline,
                             color = Color.White,
@@ -198,234 +199,22 @@ fun OemProtectionDialog(
                     }
 
                     // ── STEP 1: Battery Optimization Exemption ──────────────────────
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Forest800),
-                        border = BorderStroke(
-                            1.dp,
-                            if (isBatteryIgnored) Emerald500.copy(alpha = 0.5f) else Color(0xFFF59E0B).copy(alpha = 0.4f)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isBatteryIgnored) Emerald500.copy(alpha = 0.2f) else Color(0x33F59E0B)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = if (isBatteryIgnored) Icons.Default.Check else Icons.Default.PowerSettingsNew,
-                                        contentDescription = null,
-                                        tint = if (isBatteryIgnored) Emerald400 else Color(0xFFFBBF24),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = if (brand == OemBrand.SAMSUNG) "Step 1: Put App to Sleep OFF" else "Step 1: Battery Saver Exemption",
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = if (isBatteryIgnored) "Unrestricted Battery Active ✓" else "Currently restricted by battery saver",
-                                        color = if (isBatteryIgnored) Emerald400 else Color(0xFFFBBF24),
-                                        fontSize = 11.5.sp
-                                    )
-                                }
-                            }
-
-                            Text(
-                                text = if (brand == OemBrand.SAMSUNG) {
-                                    "Samsung One UI app ko sleep mode me daal deta hai. Set Battery to 'Unrestricted' so FocusGuard never gets paused."
-                                } else {
-                                    "Android battery saver ko FocusGuard ko background me sleep me daalne se rokein."
-                                },
-                                color = White60,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-
-                            Button(
-                                onClick = {
-                                    BatteryOptimizationHelper.requestBatteryOptimizationExemption(context)
-                                    isBatteryIgnored = BatteryOptimizationHelper.isBatteryOptimizationIgnored(context)
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(42.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isBatteryIgnored) Color(0x3322C55E) else Emerald500,
-                                    contentColor = if (isBatteryIgnored) Emerald400 else Forest950
-                                )
-                            ) {
-                                Text(
-                                    text = if (isBatteryIgnored) "Battery Exemption Active ✓" else "Allow Unrestricted Battery",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                            }
-                        }
-                    }
+                    OemBatteryOptimizationCard(
+                        context = context,
+                        brand = brand,
+                        isBatteryIgnored = isBatteryIgnored,
+                        onBatteryStatusChanged = { isBatteryIgnored = it }
+                    )
 
                     // ── STEP 2: OEM Auto-Start & Background Launch ──────────────────
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Forest800),
-                        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.45f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0x3338BDF8)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.RocketLaunch,
-                                        contentDescription = null,
-                                        tint = Color(0xFF38BDF8),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Step 2: $shortName Auto-Start & Launch",
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "Guarantees app survives reboots & screen-off",
-                                        color = Color(0xFF38BDF8),
-                                        fontSize = 11.5.sp
-                                    )
-                                }
-                            }
-
-                            // Steps checklist
-                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                stepInstructions.forEachIndexed { idx, step ->
-                                    Row(
-                                        verticalAlignment = Alignment.Top,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "•",
-                                            color = Color(0xFF38BDF8),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp
-                                        )
-                                        Text(
-                                            text = step,
-                                            color = White90,
-                                            fontSize = 12.sp,
-                                            lineHeight = 17.sp,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // 1-Click Action Button to open OEM settings
-                            Button(
-                                onClick = {
-                                    BatteryOptimizationHelper.openAutostartSettings(context)
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF38BDF8),
-                                    contentColor = Color(0xFF0F172A)
-                                )
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Launch,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "Open $shortName Autostart Settings (1-Tap)",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                            }
-                        }
-                    }
+                    OemAutostartCard(
+                        context = context,
+                        shortName = shortName,
+                        stepInstructions = stepInstructions
+                    )
 
                     // ── STEP 3: Recent Apps Lock (Collapsible) ─────────────────────
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0x1A818CF8),
-                        border = BorderStroke(1.dp, Color(0x33818CF8)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = null,
-                                    tint = Color(0xFF818CF8),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "Optional Bonus: Lock in Recent Apps",
-                                    color = Color(0xFF818CF8),
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(
-                                    onClick = { showRecentAppsGuide = !showRecentAppsGuide },
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Text(
-                                        text = if (showRecentAppsGuide) "Hide" else "How?",
-                                        color = Color(0xFF818CF8),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-
-                            AnimatedVisibility(visible = showRecentAppsGuide) {
-                                Text(
-                                    text = "Recent apps overview me FocusGuard card par tap karke 🔒 Lock/Pin icon tap karein taaki 'Clear All' tap karne par FocusGuard background se band na ho.",
-                                    color = White60,
-                                    fontSize = 11.5.sp,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
-                    }
+                    OemRecentAppsLockCard()
                 }
 
                 // ── FOOTER ACTIONS ─────────────────────────────────────────────────

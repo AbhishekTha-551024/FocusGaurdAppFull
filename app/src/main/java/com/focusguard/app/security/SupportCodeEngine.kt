@@ -1,6 +1,8 @@
 package com.focusguard.app.security
 
+import com.focusguard.app.BuildConfig
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.*
 import javax.crypto.Mac
@@ -13,34 +15,44 @@ sealed class SupportVerificationResult {
         val actionCode: String,
         val actionName: String,
         val targetPayload: String,
-        val description: String
+        val description: String,
+        /** The date string the code actually matched — feeds the single-use ledger. */
+        val matchedDate: String,
+        /** One-way fingerprint of the matched payload. Never the code itself. */
+        val codeFingerprint: String
     ) : SupportVerificationResult()
 
-    object InvalidCode : SupportVerificationResult()
+    /** Code is cryptographically valid but was already applied on this device. */
+    data object AlreadyUsed : SupportVerificationResult()
+
+    data object InvalidCode : SupportVerificationResult()
     data class RateLimited(val remainingMinutes: Long) : SupportVerificationResult()
 }
 
+/**
+ * SupportCodeEngine
+ * =================
+ * Offline, stateless HMAC-SHA256 verification of the 6-digit Emergency Support
+ * Passcode. The mirrored generator lives in admin-panel/src/crypto/codeGenerator.js
+ * and MUST stay byte-compatible (see SupportCodeEngineTest for the parity vectors).
+ *
+ * Secret handling (ECC rules/kotlin/security.md — "never hardcode secrets"):
+ * the master secret is injected at build time from local.properties / CI into
+ * BuildConfig.SUPPORT_MASTER_SECRET. It is deliberately NOT stored as a literal
+ * here any more, not even XOR-obfuscated: XOR over a constant array next to a
+ * comment naming the plaintext provides zero protection against a decompiler.
+ */
 @Singleton
 class SupportCodeEngine @Inject constructor() {
 
     companion object {
-        // Runtime XOR obfuscation to prevent static decompiler string extraction
-        // Deobfuscates with XOR 0x5A to: "FocusGuard#MasterSecret#2026@Key"
-        private val OBFUSCATED_SECRET_BYTES = intArrayOf(
-            28, 53, 57, 47, 41, 29, 47, 59, 40, 62, 121,
-            23, 59, 41, 46, 63, 40, 9, 63, 57, 40, 63, 46, 121,
-            104, 106, 104, 108, 26, 17, 63, 35
-        )
-        private const val XOR_KEY = 0x5A
+        private const val PIN_MODULO = 900_000
+        private const val PIN_OFFSET = 100_000
+        private const val POSITIVE_INT_MASK = 0x7FFFFFFF
+        private const val SUPPORTED_CODE_LENGTH = 6
 
-        fun getMasterSecret(): String {
-            val chars = CharArray(OBFUSCATED_SECRET_BYTES.size) { i ->
-                (OBFUSCATED_SECRET_BYTES[i] xor XOR_KEY).toChar()
-            }
-            return String(chars)
-        }
-
-        val DEFAULT_MASTER_SECRET: String get() = getMasterSecret()
+        /** Device IDs are alphanumeric plus hyphen; anything else is stripped, mirroring the panel. */
+        private val NON_DEVICE_ID_CHARS = Regex("[^A-Z0-9-]")
 
         const val ACTION_DISABLE_UNINSTALL = "101"
         const val ACTION_RESET_CHALLENGE = "102"
@@ -52,41 +64,56 @@ class SupportCodeEngine @Inject constructor() {
         const val ACTION_FULL_RESET = "999"
 
         private val PRESET_FEEDS = listOf("instagram", "youtube", "facebook", "all")
+
+        /** Build-time injected master secret. Blank means "not configured" and every call rejects. */
+        val DEFAULT_MASTER_SECRET: String get() = BuildConfig.SUPPORT_MASTER_SECRET
+
+        /**
+         * Canonical Device ID used for both signing and verification so that a
+         * copy-paste or a spoken "FG 8821 4902" cannot silently change the HMAC input.
+         */
+        fun canonicalizeDeviceId(raw: String): String =
+            raw.trim().uppercase(Locale.US).replace(NON_DEVICE_ID_CHARS, "")
+
+        /** One-way, non-secret-storing identity of a code, used for the local single-use ledger. */
+        fun fingerprintOf(deviceId: String, dateStr: String, actionCode: String, targetPayload: String): String {
+            val canonical = "${canonicalizeDeviceId(deviceId)}|${dateStr.trim()}|" +
+                "${actionCode.trim()}|${targetPayload.trim().lowercase(Locale.US)}"
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(canonical.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02x".format(it) }.substring(0, 32)
+        }
     }
 
     /**
-     * Calculates the exact 6-digit numeric PIN using HMAC-SHA256
+     * Calculates the exact 6-digit numeric PIN for one (device, date, action, target) tuple.
+     * Throws when the master secret is unconfigured — the caller must never treat that as "invalid code".
      */
     fun calculateCode(
         deviceId: String,
         dateStr: String,
         actionCode: String,
         targetPayload: String = "",
-        secretKey: String = getMasterSecret()
+        secretKey: String = DEFAULT_MASTER_SECRET
     ): String {
-        val normDevice = deviceId.trim().uppercase(Locale.US)
-        val normDate = dateStr.trim()
-        val normAction = actionCode.trim()
-        val normTarget = targetPayload.trim().lowercase(Locale.US)
         val secret = secretKey.trim()
+        check(secret.isNotEmpty()) { "Support master secret is not configured (see local.properties)." }
 
-        val rawPayload = "$normDevice|$normDate|$normAction|$normTarget"
+        val rawPayload = "${canonicalizeDeviceId(deviceId)}|${dateStr.trim()}|" +
+            "${actionCode.trim()}|${targetPayload.trim().lowercase(Locale.US)}"
 
         val mac = Mac.getInstance("HmacSHA256")
-        val keySpec = SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256")
-        mac.init(keySpec)
+        mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
         val hashBytes = mac.doFinal(rawPayload.toByteArray(Charsets.UTF_8))
 
-        // Read first 4 bytes as 32-bit big-endian integer, mask to positive
-        val intVal = ByteBuffer.wrap(hashBytes.copyOfRange(0, 4)).int and 0x7FFFFFFF
-        val pinNum = (intVal % 900000) + 100000
-
-        return pinNum.toString()
+        // First 4 bytes as a big-endian 32-bit int, forced positive, folded into the 100000..999999 range.
+        val intVal = ByteBuffer.wrap(hashBytes.copyOfRange(0, 4)).int and POSITIVE_INT_MASK
+        return ((intVal % PIN_MODULO) + PIN_OFFSET).toString()
     }
 
     /**
-     * Verifies the entered 6-digit PIN against all potential candidate actions
-     * across a multi-day grace window (Today local, UTC, Yesterday, Tomorrow).
+     * Verifies the entered PIN against every candidate action across the multi-day grace window
+     * (local today, UTC today, yesterday, tomorrow). Destructive actions are tested first.
      */
     fun verifySupportCode(
         inputCode: String,
@@ -97,98 +124,33 @@ class SupportCodeEngine @Inject constructor() {
         secretKey: String = DEFAULT_MASTER_SECRET
     ): SupportVerificationResult {
         val cleanCode = inputCode.trim()
-        if (cleanCode.length != 6 || !cleanCode.all { it.isDigit() }) {
+        if (cleanCode.length != SUPPORTED_CODE_LENGTH || !cleanCode.all { it.isDigit() }) {
             return SupportVerificationResult.InvalidCode
         }
 
-        // Test candidate dates to support timezone variations
-        val candidateDates = getCandidateDates()
+        val candidates = buildCandidateActions(
+            activeBlockedPackages = activeBlockedPackages,
+            activeBlockedKeywords = activeBlockedKeywords,
+            activeLimitPackages = activeLimitPackages
+        )
 
-        for (date in candidateDates) {
-            // 1. Check Action 101: Disable Uninstall Protection
-            if (calculateCode(deviceId, date, ACTION_DISABLE_UNINSTALL, "", secretKey) == cleanCode) {
-                return SupportVerificationResult.Success(
-                    actionCode = ACTION_DISABLE_UNINSTALL,
-                    actionName = "Disable Uninstall Protection",
-                    targetPayload = "",
-                    description = "Turn off Device Admin and allow FocusGuard modifications or uninstallation"
+        for (date in getCandidateDates()) {
+            for (candidate in candidates) {
+                val expected = calculateCode(
+                    deviceId = deviceId,
+                    dateStr = date,
+                    actionCode = candidate.actionCode,
+                    targetPayload = candidate.target,
+                    secretKey = secretKey
                 )
-            }
-
-            // 2. Check Action 102: Reset Challenge Lock
-            if (calculateCode(deviceId, date, ACTION_RESET_CHALLENGE, "", secretKey) == cleanCode) {
-                return SupportVerificationResult.Success(
-                    actionCode = ACTION_RESET_CHALLENGE,
-                    actionName = "Reset Challenge Lock",
-                    targetPayload = "",
-                    description = "Reset active Sentence Typing or 24-hour time delay challenges"
-                )
-            }
-
-            // 2.5 Check Action 103: Reset Time Tamper Flag
-            if (calculateCode(deviceId, date, ACTION_RESET_TIME_TAMPER, "", secretKey) == cleanCode) {
-                return SupportVerificationResult.Success(
-                    actionCode = ACTION_RESET_TIME_TAMPER,
-                    actionName = "Reset Time Tamper Lock",
-                    targetPayload = "",
-                    description = "Clear system clock manipulation flag and restore normal access"
-                )
-            }
-
-            // 3. Check Action 999: Master Emergency Reset
-            if (calculateCode(deviceId, date, ACTION_FULL_RESET, "", secretKey) == cleanCode) {
-                return SupportVerificationResult.Success(
-                    actionCode = ACTION_FULL_RESET,
-                    actionName = "Master Emergency Reset",
-                    targetPayload = "",
-                    description = "Disable all protections, unblock all apps, and clear all restrictions"
-                )
-            }
-
-            // 4. Check Action 203: Disable Distraction Feeds (Instagram, YouTube, Facebook, all)
-            for (feed in PRESET_FEEDS) {
-                if (calculateCode(deviceId, date, ACTION_DISABLE_FEED, feed, secretKey) == cleanCode) {
+                if (expected == cleanCode) {
                     return SupportVerificationResult.Success(
-                        actionCode = ACTION_DISABLE_FEED,
-                        actionName = "Disable Distraction Feed",
-                        targetPayload = feed,
-                        description = "Unblock short videos / reels for $feed"
-                    )
-                }
-            }
-
-            // 5. Check Action 201: Unblock specific app
-            for (pkg in activeBlockedPackages) {
-                if (calculateCode(deviceId, date, ACTION_UNBLOCK_APP, pkg, secretKey) == cleanCode) {
-                    return SupportVerificationResult.Success(
-                        actionCode = ACTION_UNBLOCK_APP,
-                        actionName = "Unblock App",
-                        targetPayload = pkg,
-                        description = "Remove app ($pkg) from the blocked apps list"
-                    )
-                }
-            }
-
-            // 6. Check Action 202: Delete specific keyword
-            for (kw in activeBlockedKeywords) {
-                if (calculateCode(deviceId, date, ACTION_DELETE_KEYWORD, kw, secretKey) == cleanCode) {
-                    return SupportVerificationResult.Success(
-                        actionCode = ACTION_DELETE_KEYWORD,
-                        actionName = "Delete Blocked Keyword",
-                        targetPayload = kw,
-                        description = "Unblock website keyword or domain \"$kw\""
-                    )
-                }
-            }
-
-            // 7. Check Action 301: Reset Daily Usage Limit
-            for (pkg in activeLimitPackages) {
-                if (calculateCode(deviceId, date, ACTION_RESET_LIMIT, pkg, secretKey) == cleanCode) {
-                    return SupportVerificationResult.Success(
-                        actionCode = ACTION_RESET_LIMIT,
-                        actionName = "Reset App Daily Limit",
-                        targetPayload = pkg,
-                        description = "Reset today's elapsed usage counter for $pkg"
+                        actionCode = candidate.actionCode,
+                        actionName = candidate.actionName,
+                        targetPayload = candidate.target,
+                        description = candidate.description,
+                        matchedDate = date,
+                        codeFingerprint = fingerprintOf(deviceId, date, candidate.actionCode, candidate.target)
                     )
                 }
             }
@@ -197,28 +159,91 @@ class SupportCodeEngine @Inject constructor() {
         return SupportVerificationResult.InvalidCode
     }
 
+    private data class Candidate(
+        val actionCode: String,
+        val actionName: String,
+        val target: String,
+        val description: String
+    )
+
+    private fun buildCandidateActions(
+        activeBlockedPackages: Set<String>,
+        activeBlockedKeywords: Set<String>,
+        activeLimitPackages: Set<String>
+    ): List<Candidate> = buildList {
+        add(
+            Candidate(
+                ACTION_DISABLE_UNINSTALL, "Disable Uninstall Protection", "",
+                "Turn off Device Admin and allow FocusGuard modifications or uninstallation"
+            )
+        )
+        add(
+            Candidate(
+                ACTION_RESET_CHALLENGE, "Reset Challenge Lock", "",
+                "Reset active Sentence Typing or 24-hour time delay challenges"
+            )
+        )
+        add(
+            Candidate(
+                ACTION_RESET_TIME_TAMPER, "Reset Time Tamper Lock", "",
+                "Clear system clock manipulation flag and restore normal access"
+            )
+        )
+        add(
+            Candidate(
+                ACTION_FULL_RESET, "Master Emergency Reset", "",
+                "Disable all protections, unblock all apps, and clear all restrictions"
+            )
+        )
+        PRESET_FEEDS.forEach { feed ->
+            add(
+                Candidate(
+                    ACTION_DISABLE_FEED, "Disable Distraction Feed", feed,
+                    "Unblock short videos / reels for $feed"
+                )
+            )
+        }
+        activeBlockedPackages.forEach { pkg ->
+            add(
+                Candidate(
+                    ACTION_UNBLOCK_APP, "Unblock App", pkg,
+                    "Remove app ($pkg) from the blocked apps list"
+                )
+            )
+        }
+        activeBlockedKeywords.forEach { keyword ->
+            add(
+                Candidate(
+                    ACTION_DELETE_KEYWORD, "Delete Blocked Keyword", keyword,
+                    "Unblock website keyword or domain \"$keyword\""
+                )
+            )
+        }
+        activeLimitPackages.forEach { pkg ->
+            add(
+                Candidate(
+                    ACTION_RESET_LIMIT, "Reset App Daily Limit", pkg,
+                    "Reset today's elapsed usage counter for $pkg"
+                )
+            )
+        }
+    }
+
     private fun getCandidateDates(): List<String> {
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val now = Calendar.getInstance()
-
-        val dates = mutableSetOf<String>()
-        // Local Today
-        dates.add(sdf.format(now.time))
-
-        // UTC Today
-        val utcSdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        val localFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val utcFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
         }
-        dates.add(utcSdf.format(Date()))
+        val calendar = Calendar.getInstance()
+        val localToday = localFormat.format(calendar.time)
+        val utcToday = utcFormat.format(Date())
 
-        // Yesterday
-        now.add(Calendar.DAY_OF_YEAR, -1)
-        dates.add(sdf.format(now.time))
+        calendar.add(Calendar.DAY_OF_YEAR, -1)
+        val yesterday = localFormat.format(calendar.time)
 
-        // Tomorrow
-        now.add(Calendar.DAY_OF_YEAR, 2)
-        dates.add(sdf.format(now.time))
+        calendar.add(Calendar.DAY_OF_YEAR, 2)
+        val tomorrow = localFormat.format(calendar.time)
 
-        return dates.toList()
+        return linkedSetOf(localToday, utcToday, yesterday, tomorrow).toList()
     }
 }

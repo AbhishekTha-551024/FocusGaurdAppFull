@@ -116,6 +116,41 @@ object AccessibilityRecoveryHelper {
     }
 
     /**
+     * Checks if FocusGuard's Accessibility Service is already enabled in Android's
+     * Secure Settings (meaning the user or system already turned it ON).
+     *
+     * During device boot, Android's system_server takes several seconds to bind to the
+     * service. This check distinguishes between "already configured, waiting for OS binding"
+     * vs "actually disabled by the user".
+     */
+    fun isAccessibilityConfiguredInSettings(context: Context): Boolean {
+        return try {
+            val isA11yGloballyEnabled = Settings.Secure.getInt(
+                context.contentResolver,
+                Settings.Secure.ACCESSIBILITY_ENABLED,
+                0
+            ) == 1
+            if (!isA11yGloballyEnabled) return false
+
+            val enabledServices = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: ""
+            val targetComponent = "${context.packageName}/${FocusGuardAccessibilityService::class.java.name}"
+            val shortComponent = "${context.packageName}/.service.FocusGuardAccessibilityService"
+
+            enabledServices.split(":").any { item ->
+                val trimmed = item.trim()
+                trimmed.equals(targetComponent, ignoreCase = true) ||
+                        trimmed.equals(shortComponent, ignoreCase = true)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking isAccessibilityConfiguredInSettings: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * LAYER 1: Attempts silent, programmatic re-enablement of FocusGuardAccessibilityService
      * using WRITE_SECURE_SETTINGS permission.
      *
@@ -136,13 +171,12 @@ object AccessibilityRecoveryHelper {
                 else -> "$currentServices:$targetComponent"
             }
 
-            if (!currentServices.contains(targetComponent)) {
-                Settings.Secure.putString(
-                    contentResolver,
-                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-                    newServices
-                )
-            }
+            // Always write to re-assert with ContentObserver so system_server re-binds if stalled
+            Settings.Secure.putString(
+                contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                newServices
+            )
 
             // Always ensure the master accessibility toggle is ON
             Settings.Secure.putString(
@@ -151,13 +185,49 @@ object AccessibilityRecoveryHelper {
                 "1"
             )
 
-            Log.i(TAG, "Successfully enabled AccessibilityService programmatically via WRITE_SECURE_SETTINGS!")
+            Log.i(TAG, "Successfully asserted AccessibilityService programmatically via WRITE_SECURE_SETTINGS!")
             true
         } catch (e: SecurityException) {
             Log.d(TAG, "WRITE_SECURE_SETTINGS not granted: ${e.message}")
             false
         } catch (e: Exception) {
             Log.e(TAG, "Failed to programmatically enable accessibility: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Invariant Rule 3: Determines if protection is strictly active.
+     * Protection is active ONLY when:
+     * 1. Device Admin is currently enabled, AND
+     * 2. Uninstall Protection is actively turned ON (and not expired).
+     */
+    fun isProtectionActive(context: Context, repository: FocusGuardRepository? = null): Boolean {
+        // Fast Gate 1: Device Admin must be active
+        if (!FocusGuardDeviceAdminReceiver.isDeviceAdminActive(context)) {
+            return false
+        }
+
+        // Fast Gate 2: Uninstall protection must be enabled and unexpired
+        return try {
+            if (repository != null) {
+                repository.isFastUninstallProtectionEnabled()
+            } else {
+                val syncPrefs = context.getSharedPreferences("focusguard_sync_cache", Context.MODE_PRIVATE)
+                val enabled = syncPrefs.getBoolean("uninstall_protection_enabled", false)
+                if (enabled) {
+                    val expiry = syncPrefs.getLong("uninstall_protection_expiry_timestamp", 0L)
+                    if (expiry <= 0L) true else System.currentTimeMillis() < expiry
+                } else if (isDirectBootLocked(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    val deContext = context.createDeviceProtectedStorageContext()
+                    val dePrefs = deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE)
+                    dePrefs.getBoolean("uninstall_protection_enabled", false)
+                } else {
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error evaluating isProtectionActive: ${e.message}")
             false
         }
     }
@@ -176,14 +246,23 @@ object AccessibilityRecoveryHelper {
     ) {
         Log.i(TAG, "restoreProtectionFast triggered from source: $source")
 
-        // 1. If service is already active, cancel any previous health alert and return
+        // 1. If service is already active, cancel any previous health alert and return immediately
         if (isAccessibilityActive(context)) {
             Log.i(TAG, "Accessibility service is already active. Dismissing recovery notices.")
             AccessibilityHealthWorker.cancelReactivationNotification(context)
             return
         }
 
-        // 2. Try Layer 1: Instant programmatic silent enable (< 1ms)
+        // 2. CRITICAL PROTECTION GATE (Invariant Rule 3):
+        // Only recover or auto-enable Accessibility if Uninstall Protection is strictly ACTIVE.
+        val isProtected = isProtectionActive(context, repository)
+        if (!isProtected) {
+            Log.i(TAG, "restoreProtectionFast: Protection is inactive (Uninstall Protection OFF or Admin inactive). Accessibility will stay OFF.")
+            AccessibilityHealthWorker.cancelReactivationNotification(context)
+            return
+        }
+
+        // 3. Try Layer 1: Instant programmatic silent enable (< 1ms) via WRITE_SECURE_SETTINGS
         val programmaticSuccess = tryEnableAccessibilityProgrammatically(context)
         if (programmaticSuccess) {
             Log.i(TAG, "Accessibility restored silently via WRITE_SECURE_SETTINGS from $source!")
@@ -191,43 +270,46 @@ object AccessibilityRecoveryHelper {
             return
         }
 
-        // 3. If in Direct Boot mode, we cannot read CE storage (Room/DataStore) or show normal UI
+        // 4. BOOT & GRACE PERIOD CHECK:
+        // Only allow grace period if this is a benign boot event and NOT a clone removal or tamper event!
+        val isExplicitTamperOrRemoval = source.contains("PackageRemovedReceiver") ||
+                source.contains("Admin") ||
+                source.contains("Tamper") ||
+                source.contains("ConfirmedOff")
+        val isConfiguredInSettings = isAccessibilityConfiguredInSettings(context)
+        if (isConfiguredInSettings && !isExplicitTamperOrRemoval) {
+            Log.i(TAG, "restoreProtectionFast: Accessibility is configured in Settings.Secure ($source). Allowing OS grace period to bind silently.")
+            AccessibilityHealthWorker.cancelReactivationNotification(context)
+            return
+        }
+
+        // 5. If in Direct Boot mode, we cannot read CE storage (Room/DataStore) or show normal UI
         if (isDirectBootLocked(context)) {
             Log.w(TAG, "Device is in Direct Boot (locked). Programmatic enable attempted; awaiting USER_PRESENT.")
             return
         }
 
-        // 4. Check if protection is configured (AGENTS Rule 3: strictly when admin active AND uninstall protection enabled)
-        val isProtected = try {
-            val fastUninstall = repository?.isFastUninstallProtectionEnabled() ?: false
-            val isAdmin = FocusGuardDeviceAdminReceiver.isDeviceAdminActive(context)
-            isAdmin && fastUninstall
+        // 6. Layer 2 & Layer 3 recovery: Only triggered when Accessibility is ACTUALLY disabled in Settings
+        // by user tamper or aggressive OS kill, and silent programmatic restore is unavailable.
+        Log.w(TAG, "Protection is configured but Accessibility is genuinely OFF in Settings after $source! Triggering recovery.")
+
+        // LAYER 2: Launch urgent recovery activity (only when user actually turned off accessibility in settings)
+        try {
+            if (Settings.canDrawOverlays(context)) {
+                AccessibilityRecoveryActivity.start(
+                    context = context,
+                    reason = "Accessibility was turned off during device restart ($source)."
+                )
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not check fast protection flags: ${e.message}")
-            false
+            Log.e(TAG, "Failed to launch AccessibilityRecoveryActivity: ${e.message}", e)
         }
 
-        if (isProtected) {
-            Log.w(TAG, "Protection is configured but Accessibility is OFF after $source! Triggering Layer 2 & 3 recovery.")
-
-            // LAYER 2: Launch urgent full-screen recovery activity (via SYSTEM_ALERT_WINDOW exemption)
-            try {
-                if (Settings.canDrawOverlays(context)) {
-                    AccessibilityRecoveryActivity.start(
-                        context = context,
-                        reason = "Accessibility was turned off during device restart ($source)."
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch AccessibilityRecoveryActivity: ${e.message}", e)
-            }
-
-            // LAYER 3: Post persistent high-priority notification with fullScreenIntent
-            try {
-                AccessibilityHealthWorker.postReactivationNotification(context)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to post reactivation notification: ${e.message}", e)
-            }
+        // LAYER 3: Post persistent high-priority notification
+        try {
+            AccessibilityHealthWorker.postReactivationNotification(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to post reactivation notification: ${e.message}", e)
         }
     }
 

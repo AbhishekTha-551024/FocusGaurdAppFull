@@ -18,6 +18,8 @@
 -keep interface com.focusguard.app.data.db.*Dao { *; }
 
 # Data & Domain Models (prevent Firestore serialization field stripping)
+-keep class com.focusguard.app.core.model.** { *; }
+-keepclassmembers class com.focusguard.app.core.model.** { *; }
 -keep class com.focusguard.app.data.model.** { *; }
 -keep class com.focusguard.app.data.db.** { *; }
 -keep class com.focusguard.app.security.PresetIntent { *; }

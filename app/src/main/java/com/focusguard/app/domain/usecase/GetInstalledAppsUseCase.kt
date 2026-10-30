@@ -2,7 +2,7 @@ package com.focusguard.app.domain.usecase
 
 import android.content.Context
 import android.content.pm.PackageManager
-import com.focusguard.app.data.model.AppInfo
+import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.data.repository.FocusGuardRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -34,16 +34,26 @@ class GetInstalledAppsUseCase @Inject constructor(
 
     init {
         // Eagerly pre-warm installed apps in RAM at app boot for 0ms instant UI
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+        val scope = kotlinx.coroutines.CoroutineScope(
+            Dispatchers.IO + kotlinx.coroutines.SupervisorJob() +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+                android.util.Log.d("GetInstalledAppsUseCase", "Warmup uncaught error: ${throwable.message}")
+            }
+        )
+        scope.launch {
             try {
                 val apps = getRawInstalledApps(false)
                 // Pre-warm top app icons into memory cache in background for buttery smooth 120 FPS scrolling
                 apps.take(75).forEach { app ->
                     try {
                         com.focusguard.app.utils.AppIconLoader.loadIcon(context, app.packageName)
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        android.util.Log.d("GetInstalledAppsUseCase", "Icon pre-warm error: ${e.message}")
+                    }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.d("GetInstalledAppsUseCase", "Pre-warm failed: ${e.message}")
+            }
         }
     }
 

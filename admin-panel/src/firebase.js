@@ -9,12 +9,19 @@ import {
   doc,
   getDoc,
   getDocs,
+  setDoc,
   updateDoc,
   addDoc,
   serverTimestamp,
   limit
 } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged
+} from 'firebase/auth';
 
 /**
  * FocusGuard Production Firebase Project Config
@@ -44,292 +51,385 @@ if (isFirebaseConfigured) {
     db = getFirestore(app);
     auth = getAuth(app);
   } catch (err) {
-    console.warn('Firebase initialization skipped or encountered error:', err);
+    console.error('Firebase initialization error:', err);
   }
 }
 
 export { app, db, auth };
 
 /**
- * Look up a registered user by their Gmail address in Firestore
- * Looks up direct document 'users_by_email/{email}' first, then queries 'users' collection.
+ * Subscribes to Firebase Auth state changes.
+ */
+export function subscribeToAuth(callback) {
+  if (!auth) return () => {};
+  return onAuthStateChanged(auth, callback);
+}
+
+/**
+ * Signs in the admin with Google.
+ * Required to access Firestore under authenticated security rules.
+ */
+export async function loginWithGoogle() {
+  if (!auth) throw new Error('Firebase Auth is not initialized');
+  const provider = new GoogleAuthProvider();
+  return await signInWithPopup(auth, provider);
+}
+
+/**
+ * Signs out from Firebase.
+ */
+export async function logoutUser() {
+  if (!auth) return;
+  return await signOut(auth);
+}
+
+/**
+ * The email of the admin currently signed in, or null.
+ *
+ * Audit records used to claim "support-agent@focusguard.app" for every action, which made the
+ * trail useless for answering the only question that matters after a leak: who issued this code?
+ * Callers must treat null as "not signed in" rather than substituting a placeholder.
+ */
+export function getAdminEmail() {
+  return auth?.currentUser?.email || null;
+}
+
+const TICKET_CODE_CACHE_KEY = 'focusguard_ticket_codes';
+
+/**
+ * Keeps an issued ticket code on this machine only.
+ *
+ * The code itself is deliberately NOT written to support_requests: the FocusGuard app itself can
+ * read that collection, so a stored PIN next to its deviceId would hand any device a working
+ * unlock for somebody else's phone. Firestore gets the fingerprint; the admin's browser keeps the
+ * code so the copy-to-clipboard workflow still works.
+ */
+export function cacheTicketCodeLocally(ticketId, code) {
+  try {
+    const map = JSON.parse(localStorage.getItem(TICKET_CODE_CACHE_KEY) || '{}');
+    map[ticketId] = code;
+    localStorage.setItem(TICKET_CODE_CACHE_KEY, JSON.stringify(map));
+  } catch (err) {
+    console.warn('Could not cache ticket code locally:', err.message);
+  }
+}
+
+export function getCachedTicketCode(ticketId) {
+  try {
+    const map = JSON.parse(localStorage.getItem(TICKET_CODE_CACHE_KEY) || '{}');
+    return map[ticketId] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Look up a registered FocusGuard user by Gmail address.
+ * Searches:
+ *   1. users_by_email/{email}  (direct key lookup)
+ *   2. users collection        (queries by email field)
+ *
+ * Returns null if not found in Firestore.
  */
 export async function lookupUserByEmail(email) {
   if (!email || !email.trim()) return null;
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase is not configured. Cannot look up user.');
+  }
+
   const cleanEmail = email.trim().toLowerCase();
 
-  if (isFirebaseConfigured && db) {
-    try {
-      // 1. Direct key lookup in users_by_email collection
-      const emailDocRef = doc(db, 'users_by_email', cleanEmail);
-      const emailSnap = await getDoc(emailDocRef);
-      if (emailSnap.exists()) {
-        return { id: emailSnap.id, ...emailSnap.data(), source: 'users_by_email' };
-      }
-
-      // 2. Query 'users' collection by email field
-      const q = query(
-        collection(db, 'users'),
-        where('email', '==', cleanEmail),
-        limit(1)
-      );
-      const querySnap = await getDocs(q);
-      if (!querySnap.empty) {
-        const d = querySnap.docs[0];
-        return { id: d.id, ...d.data(), source: 'users' };
-      }
-    } catch (err) {
-      console.error('Error looking up user by email in Firestore:', err);
+  // 1. Direct document lookup in users_by_email collection
+  try {
+    const emailDocRef = doc(db, 'users_by_email', cleanEmail);
+    const emailSnap = await getDoc(emailDocRef);
+    if (emailSnap.exists()) {
+      return { id: emailSnap.id, ...emailSnap.data(), source: 'users_by_email' };
     }
+  } catch (err) {
+    console.warn('users_by_email lookup failed:', err.message);
   }
 
-  // Fallback demo users if Firestore is not accessible or user is testing offline
-  const demoUsers = [
-    {
-      email: 'user@gmail.com',
-      displayName: 'Test User',
-      deviceId: 'FG-8821-4902',
-      deviceModel: 'Samsung Galaxy S23',
-      androidVersion: '14'
+  // 2. Query 'users' collection by email field
+  try {
+    const q = query(
+      collection(db, 'users'),
+      where('email', '==', cleanEmail),
+      limit(1)
+    );
+    const querySnap = await getDocs(q);
+    if (!querySnap.empty) {
+      const d = querySnap.docs[0];
+      return { id: d.id, ...d.data(), source: 'users' };
     }
-  ];
-  return demoUsers.find((u) => u.email.toLowerCase() === cleanEmail) || null;
+  } catch (err) {
+    console.warn('users collection query failed:', err.message);
+    // Don't throw — fall through to devices lookup
+  }
+
+  // 3. Query 'devices' collection where linkedEmails array-contains this email.
+  //    This handles the real-world case: same physical phone, multiple Google accounts.
+  //    AuthRepository.kt writes: "linkedEmails": FieldValue.arrayUnion(email)
+  //    So ALL accounts on the same phone accumulate here — none get overwritten.
+  try {
+    const devQ = query(
+      collection(db, 'devices'),
+      where('linkedEmails', 'array-contains', cleanEmail),
+      limit(1)
+    );
+    const devSnap = await getDocs(devQ);
+    if (!devSnap.empty) {
+      const devData = devSnap.docs[0].data();
+      return {
+        id: devData.deviceId,
+        email: cleanEmail,
+        deviceId: devData.deviceId,
+        deviceModel: devData.model,
+        androidVersion: devData.osVersion?.replace('Android ', '').split(' ')[0] || '?',
+        appVersion: devData.appVersion,
+        linkedEmails: devData.linkedEmails || [cleanEmail],
+        primaryEmail: devData.primaryEmail || cleanEmail,
+        source: 'devices_linked_emails'
+      };
+    }
+  } catch (err) {
+    console.error('devices linkedEmails query failed:', err);
+    throw err;
+  }
+
+  // Not found in any Firestore collection
+  return null;
 }
 
 /**
- * Mock data for Standalone / Demo Mode
+ * Manually link an email to a device ID in Firestore users_by_email.
+ * Admin-only: called from the admin panel manual link form.
  */
-const MOCK_TICKETS = [
-  {
-    id: 'req_101',
-    deviceId: 'FG-8821-4902',
-    phoneModel: 'Samsung Galaxy S23 (Android 14)',
-    actionCode: '101',
-    actionName: 'Disable Uninstall Protection',
-    targetPayload: '',
-    reason: 'Need to factory reset my phone before selling it to a friend.',
-    status: 'pending',
-    createdAt: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
-    userEmail: 'rohit.sharma@example.com'
-  },
-  {
-    id: 'req_102',
-    deviceId: 'FG-3310-9284',
-    phoneModel: 'Google Pixel 8 Pro (Android 15)',
-    actionCode: '201',
-    actionName: 'Unblock Specific App',
-    targetPayload: 'com.google.android.youtube',
-    reason: 'Have semester exams tomorrow. Need to watch physics lectures on YouTube.',
-    status: 'pending',
-    createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    userEmail: 'priya.verma@example.com'
-  },
-  {
-    id: 'req_103',
-    deviceId: 'FG-7A39-K92B',
-    phoneModel: 'OnePlus 12 (Android 14)',
-    actionCode: '202',
-    actionName: 'Delete Blocked Keyword',
-    targetPayload: 'reddit.com',
-    reason: 'Need to access r/developersIndia for job referral queries.',
-    status: 'resolved',
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 3).toISOString(),
-    resolvedAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
-    responseCode: '592813',
-    userEmail: 'dev.kumar@example.com'
+export async function linkEmailToDevice(email, deviceId, model = 'Android Phone') {
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase is not configured.');
   }
-];
-
-const MOCK_DEVICES = [
-  {
-    id: 'FG-8821-4902',
-    deviceId: 'FG-8821-4902',
-    model: 'Samsung Galaxy S23',
-    osVersion: 'Android 14 (API 34)',
-    appVersion: '1.2.4',
-    isOnline: true,
-    lastActive: 'Just now',
-    blockedAppsCount: 6,
-    blockedKeywordsCount: 14,
-    uninstallProtection: true,
-    timedLockDays: 15
-  },
-  {
-    id: 'FG-3310-9284',
-    deviceId: 'FG-3310-9284',
-    model: 'Google Pixel 8 Pro',
-    osVersion: 'Android 15 (API 35)',
-    appVersion: '1.2.4',
-    isOnline: true,
-    lastActive: '4 mins ago',
-    blockedAppsCount: 9,
-    blockedKeywordsCount: 22,
-    uninstallProtection: true,
-    timedLockDays: 30
-  },
-  {
-    id: 'FG-7A39-K92B',
-    deviceId: 'FG-7A39-K92B',
-    model: 'OnePlus 12',
-    osVersion: 'Android 14 (API 34)',
-    appVersion: '1.2.3',
-    isOnline: false,
-    lastActive: '3 hours ago',
-    blockedAppsCount: 4,
-    blockedKeywordsCount: 8,
-    uninstallProtection: true,
-    timedLockDays: 7
-  },
-  {
-    id: 'FG-4491-X81A',
-    deviceId: 'FG-4491-X81A',
-    model: 'Xiaomi 13 Pro',
-    osVersion: 'Android 13 (API 33)',
-    appVersion: '1.2.0',
-    isOnline: false,
-    lastActive: '2 days ago',
-    blockedAppsCount: 12,
-    blockedKeywordsCount: 35,
-    uninstallProtection: false,
-    timedLockDays: 0
-  }
-];
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanDevice = deviceId.trim().toUpperCase();
+  const userData = {
+    email: cleanEmail,
+    displayName: cleanEmail.split('@')[0],
+    deviceId: cleanDevice,
+    deviceModel: model,
+    linkedAt: serverTimestamp()
+  };
+  await setDoc(doc(db, 'users_by_email', cleanEmail), userData, { merge: true });
+  return userData;
+}
 
 /**
- * Listens to Real-time Support Requests from users
+ * Subscribes to real-time Support Requests from Firestore.
+ * Returns empty array when collection is empty — no mock data.
  */
 export function subscribeToSupportTickets(callback) {
-  if (isFirebaseConfigured && db) {
-    try {
-      const q = query(
-        collection(db, 'support_requests'),
-        orderBy('createdAt', 'desc'),
-        limit(50)
-      );
-      return onSnapshot(q, (snapshot) => {
-        const tickets = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        callback(tickets);
-      });
-    } catch (e) {
-      console.warn('Firestore tickets query error, falling back to local/demo:', e);
-    }
+  if (!isFirebaseConfigured || !db) {
+    console.error('Firebase not configured — cannot load support tickets.');
+    callback([]);
+    return () => {};
   }
 
-  // Fallback / Demo state from localStorage
-  const saved = localStorage.getItem('focusguard_demo_tickets');
-  const list = saved ? JSON.parse(saved) : MOCK_TICKETS;
-  callback(list);
+  const q = query(
+    collection(db, 'support_requests'),
+    orderBy('createdAt', 'desc'),
+    limit(50)
+  );
 
-  // Return unsubscribe dummy
-  return () => {};
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const tickets = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      callback(tickets);
+    },
+    (err) => {
+      console.error('Firestore support_requests listener error:', err);
+      callback([]);
+    }
+  );
 }
 
 /**
- * Updates a Support Ticket's status (e.g. Approved with code, or Rejected)
+ * Updates a Support Ticket's status in Firestore.
  */
 export async function updateSupportTicket(ticketId, updates) {
-  if (isFirebaseConfigured && db) {
-    try {
-      const docRef = doc(db, 'support_requests', ticketId);
-      await updateDoc(docRef, {
-        ...updates,
-        updatedAt: serverTimestamp()
-      });
-      return true;
-    } catch (e) {
-      console.error('Failed to update ticket in Firestore:', e);
-    }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase not configured — cannot update ticket.');
   }
-
-  // Fallback update in localStorage
-  const saved = localStorage.getItem('focusguard_demo_tickets');
-  const list = saved ? JSON.parse(saved) : [...MOCK_TICKETS];
-  const updatedList = list.map((t) => (t.id === ticketId ? { ...t, ...updates } : t));
-  localStorage.setItem('focusguard_demo_tickets', JSON.stringify(updatedList));
+  const docRef = doc(db, 'support_requests', ticketId);
+  await updateDoc(docRef, {
+    ...updates,
+    updatedAt: serverTimestamp()
+  });
   return true;
 }
 
 /**
- * Listens to registered FocusGuard devices
+ * Subscribes to registered FocusGuard devices in real time.
+ *
+ * Priority:
+ *   1. 'devices' collection (written directly by AuthRepository.kt on sign-in)
+ *   2. 'users' collection fallback (extracts deviceId + telemetry, de-duped by deviceId)
+ *
+ * Note: Multiple users on the same physical phone share one deviceId.
+ * The panel groups them under a single device entry with all linked emails listed.
  */
 export function subscribeToDevices(callback) {
-  if (isFirebaseConfigured && db) {
-    try {
-      const q = query(collection(db, 'devices'), orderBy('lastActive', 'desc'), limit(100));
-      return onSnapshot(q, (snapshot) => {
-        const devices = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        callback(devices);
-      });
-    } catch (e) {
-      console.warn('Firestore devices query error:', e);
-    }
+  if (!isFirebaseConfigured || !db) {
+    console.error('Firebase not configured — cannot load devices.');
+    callback([]);
+    return () => {};
   }
 
-  callback(MOCK_DEVICES);
-  return () => {};
+  const q = query(collection(db, 'devices'), limit(200));
+
+  return onSnapshot(
+    q,
+    async (snapshot) => {
+      if (!snapshot.empty) {
+        const devices = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+          isCloudLive: true
+        }));
+        callback(devices);
+      } else {
+        // 'devices' collection empty — pull telemetry from 'users' collection
+        const userDevices = await fetchDevicesFromUsersCollection();
+        callback(userDevices);
+      }
+    },
+    async (err) => {
+      console.warn('Firestore devices listener error, trying users collection:', err.message);
+      try {
+        const userDevices = await fetchDevicesFromUsersCollection();
+        callback(userDevices);
+      } catch {
+        callback([]);
+      }
+    }
+  );
 }
 
 /**
- * Logs an action to the Audit Trail
+ * Reads 'users' collection, groups users by deviceId, and returns device list.
+ * Handles multiple accounts registered on the same physical phone correctly.
+ */
+async function fetchDevicesFromUsersCollection() {
+  if (!isFirebaseConfigured || !db) return [];
+  try {
+    const snap = await getDocs(query(collection(db, 'users'), limit(200)));
+    if (snap.empty) return [];
+
+    const deviceMap = new Map();
+
+    snap.docs.forEach((d) => {
+      const u = d.data();
+      if (!u.deviceId) return;
+
+      if (deviceMap.has(u.deviceId)) {
+        // Same physical device — just add this email to linkedEmails
+        const existing = deviceMap.get(u.deviceId);
+        if (u.email && !existing.linkedEmails.includes(u.email)) {
+          existing.linkedEmails.push(u.email);
+          // Keep the primary email as the first registered one
+          if (!existing.userEmail) existing.userEmail = u.email;
+        }
+      } else {
+        deviceMap.set(u.deviceId, {
+          id: u.deviceId,
+          deviceId: u.deviceId,
+          model: u.deviceModel || 'Android Device',
+          osVersion: `Android ${u.androidVersion || '?'}`,
+          appVersion: u.appVersion || '1.0.0',
+          isOnline: true,
+          isCloudLive: true,
+          lastActive: u.updatedAt?.toDate
+            ? u.updatedAt.toDate().toLocaleString()
+            : 'Recently synced',
+          blockedAppsCount: u.blockedAppsCount || 0,
+          blockedKeywordsCount: u.blockedKeywordsCount || 0,
+          uninstallProtection: u.uninstallProtection !== false,
+          timedLockDays: u.timedLockDays || 0,
+          userEmail: u.email || '',
+          linkedEmails: u.email ? [u.email] : []
+        });
+      }
+    });
+
+    return Array.from(deviceMap.values());
+  } catch (err) {
+    console.error('Could not read users collection for devices:', err);
+    return [];
+  }
+}
+
+/**
+ * Registers or updates a device in Firestore 'devices' collection.
+ * Called from AuthRepository.kt on every successful sign-in.
+ */
+export async function registerDeviceInFirestore(device) {
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase not configured.');
+  }
+  const docRef = doc(db, 'devices', device.deviceId);
+  await setDoc(docRef, {
+    ...device,
+    lastActive: serverTimestamp(),
+    syncedAt: new Date().toISOString()
+  }, { merge: true });
+  return true;
+}
+
+/**
+ * Records an admin action to the Audit Trail in Firestore and localStorage.
+ *
+ * The cloud copy never carries the 6-digit code. `code` is stripped and replaced by
+ * `codeFingerprint` (the same SHA-256 identity the app's single-use ledger stores), which is enough
+ * to prove what was issued without turning the audit trail into a list of live unlocks. The raw code
+ * stays in this browser's localStorage so the operator can re-read what they just sent.
  */
 export async function recordAuditLog(entry) {
-  const auditEntry = {
-    ...entry,
+  const { code, ...safeEntry } = entry || {};
+
+  const cloudEntry = {
+    ...safeEntry,
+    codeFingerprint: entry?.codeFingerprint || null,
+    codeStoredInCloud: false,
     timestamp: new Date().toISOString()
   };
 
   if (isFirebaseConfigured && db) {
     try {
       await addDoc(collection(db, 'audit_logs'), {
-        ...auditEntry,
+        ...cloudEntry,
         createdAt: serverTimestamp()
       });
     } catch (e) {
       console.warn('Failed to push audit log to Firestore:', e);
     }
+  } else {
+    console.warn('Audit log not written to Firestore: Firebase is not configured.');
   }
 
-  // Always keep in localStorage for immediate offline viewing
   try {
     const existing = JSON.parse(localStorage.getItem('focusguard_audit_logs') || '[]');
-    existing.unshift(auditEntry);
-    localStorage.setItem('focusguard_audit_logs', JSON.stringify(existing.slice(0, 100)));
-  } catch (err) {
-    // Ignore storage quota error
-  }
+    existing.unshift({ ...cloudEntry, code: code || null });
+    localStorage.setItem('focusguard_audit_logs', JSON.stringify(existing.slice(0, 200)));
+  } catch (_) {}
 }
 
 /**
- * Retrieves audit history
+ * Returns locally cached audit logs (from recordAuditLog calls in this session).
+ * Empty array when no admin actions have been performed yet.
  */
 export function getLocalAuditLogs() {
   try {
     const raw = localStorage.getItem('focusguard_audit_logs');
-    if (!raw) {
-      return [
-        {
-          timestamp: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-          adminEmail: 'support@focusguard.app',
-          deviceId: 'FG-7A39-K92B',
-          actionCode: '202',
-          actionName: 'Delete Blocked Keyword',
-          targetPayload: 'reddit.com',
-          code: '592813',
-          reason: 'User verified via WhatsApp support'
-        },
-        {
-          timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-          adminEmail: 'admin@focusguard.app',
-          deviceId: 'FG-8821-4902',
-          actionCode: '101',
-          actionName: 'Disable Uninstall Protection',
-          targetPayload: '',
-          code: '653462',
-          reason: 'Device transfer requested'
-        }
-      ];
-    }
-    return JSON.parse(raw);
+    return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }

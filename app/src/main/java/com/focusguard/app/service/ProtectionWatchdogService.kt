@@ -68,7 +68,9 @@ class ProtectionWatchdogService : Service() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "stopForeground cleanup error: ${e.message}")
+        }
         stopSelf()
     }
 
@@ -82,7 +84,9 @@ class ProtectionWatchdogService : Service() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "onStartCommand stopForeground error: ${e.message}")
+        }
         stopSelf()
         return START_NOT_STICKY
     }
@@ -135,8 +139,8 @@ class ProtectionWatchdogService : Service() {
         if (isServiceDestroyed) return   // FIX NH1: guard against post-onDestroy() access
         try {
             val isA11yRunning = FocusGuardAccessibilityService.isServiceRunning
-            val isProtectionConfigured = repository.isFastUninstallProtectionEnabled() ||
-                    repository.getFastBlockedAppsCount() > 0
+            val isProtectionConfigured = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(this) &&
+                    repository.isFastUninstallProtectionEnabled()
 
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 ?: return

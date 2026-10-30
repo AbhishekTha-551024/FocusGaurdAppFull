@@ -7,7 +7,7 @@ import android.os.SystemClock
 import android.provider.Telephony
 import android.telecom.TelecomManager
 import android.util.Log
-import com.focusguard.app.data.datastore.FocusGuardPreferences
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +43,13 @@ class SessionBlockManager @Inject constructor(
         private const val TAG = "SessionBlockManager"
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+    private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled coroutine exception in SessionBlockManager", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + coroutineExceptionHandler)
 
     // Fast-path atomic state in RAM
     private val isSessionActive = AtomicBoolean(false)
@@ -107,7 +113,6 @@ class SessionBlockManager @Inject constructor(
      */
     fun isPackageBlockedInSession(packageName: String): Boolean {
         if (!isSessionCurrentlyActive()) return false
-
         val pkg = packageName.lowercase()
 
         // 1. Critical System & FocusGuard Invariants (NEVER block phone, emergency dialer, SMS, or FocusGuard)
@@ -127,63 +132,48 @@ class SessionBlockManager @Inject constructor(
         val p = pkg.lowercase()
         if (p == "com.android.settings" || p.endsWith(".settings") || p.contains(".settings.")) return true
         if (p == "com.android.vending") return true
-        if (p.contains("packageinstaller") || p.contains("safecenter") || p.contains("securitycenter")) return true
-        return false
+        return p.contains("packageinstaller") || p.contains("safecenter") || p.contains("securitycenter")
     }
 
     fun isAlwaysAllowedPackage(pkg: String): Boolean {
         // FocusGuard Self-package (Invariant Rule 2)
         if (pkg == context.packageName || pkg.startsWith("com.focusguard.app")) return true
-
-        // Android System UI
         if (pkg == "com.android.systemui") return true
 
         // Phone Dialer / In-Call UI
-        if (pkg.contains("dialer") || pkg.contains("incallui") || pkg.contains("telecom") || pkg.contains("phone")) {
-            return true
-        }
+        if (pkg.contains("dialer") || pkg.contains("incallui") || pkg.contains("telecom") || pkg.contains("phone")) return true
 
         // Truecaller & Popular Caller ID / Calling Apps (Never block calls)
-        if (pkg.contains("truecaller") ||
-            pkg == "com.callapp.contacts" ||
-            pkg == "com.eycon.android" ||
-            pkg == "com.syncme.syncmeapp" ||
-            pkg.contains("callerid") ||
-            pkg == "gogolook.callgogolook2" ||
+        if (pkg.contains("truecaller") || pkg == "com.callapp.contacts" || pkg == "com.eycon.android" ||
+            pkg == "com.syncme.syncmeapp" || pkg.contains("callerid") || pkg == "gogolook.callgogolook2" ||
             pkg == "com.simplemobiletools.dialer"
-        ) {
-            return true
-        }
+        ) return true
 
         // Default Phone App
         try {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
             val defaultDialer = telecomManager?.defaultDialerPackage
             if (defaultDialer != null && pkg == defaultDialer.lowercase()) return true
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Default dialer check error: ${e.message}")
+        }
 
         // If phone is actively ringing or on call, NEVER block whatever app is handling the call
-        if (isInPhoneCall()) {
-            return true
-        }
+        if (isInPhoneCall()) return true
 
         // Default SMS App
         try {
             val defaultSms = Telephony.Sms.getDefaultSmsPackage(context)
             if (defaultSms != null && pkg == defaultSms.lowercase()) return true
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Default SMS check error: ${e.message}")
+        }
 
         // Clock / Alarm
-        if (pkg.contains("deskclock") || pkg.contains("alarm") || pkg.contains("google.android.deskclock")) {
-            return true
-        }
+        if (pkg.contains("deskclock") || pkg.contains("alarm") || pkg.contains("google.android.deskclock")) return true
 
         // Emergency alerts & SIM toolkit
-        if (pkg.contains("cellbroadcastreceiver") || pkg.contains("stk")) {
-            return true
-        }
-
-        return false
+        return pkg.contains("cellbroadcastreceiver") || pkg.contains("stk")
     }
 
     /**
@@ -192,12 +182,10 @@ class SessionBlockManager @Inject constructor(
      */
     fun isInPhoneCall(): Boolean {
         return try {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val mode = audioManager?.mode ?: AudioManager.MODE_NORMAL
-            mode == AudioManager.MODE_RINGTONE ||
-            mode == AudioManager.MODE_IN_CALL ||
-            mode == AudioManager.MODE_IN_COMMUNICATION
-        } catch (_: Exception) {
+            mode == AudioManager.MODE_RINGTONE || mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION
+        } catch (e: Exception) {
+            Log.d(TAG, "isInPhoneCall error: ${e.message}")
             false
         }
     }
@@ -211,7 +199,7 @@ class SessionBlockManager @Inject constructor(
             System.currentTimeMillis() >= sessionEndTimeMillis.get()
         }
         if (isExpired) {
-            stopSession(isAborted = false)
+            sessionScope.launch { stopSession(isAborted = false) }
             return false
         }
         return true

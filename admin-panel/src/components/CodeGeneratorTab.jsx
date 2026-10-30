@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Key,
   Copy,
@@ -22,13 +22,18 @@ import {
 import confetti from 'canvas-confetti';
 import {
   ACTION_DEFINITIONS,
-  DEFAULT_MASTER_SECRET,
   generateSupportCode,
   generateSupportMessage,
   getTodayDateString,
-  normalizeDeviceId
+  getAcceptableDates,
+  isDateWithinGraceWindow,
+  isMasterSecretConfigured,
+  isWellFormedDeviceId,
+  loadMasterSecret,
+  normalizeDeviceId,
+  describeMasterSecret
 } from '../crypto/codeGenerator';
-import { recordAuditLog, lookupUserByEmail } from '../firebase';
+import { recordAuditLog, lookupUserByEmail, getAdminEmail, subscribeToAuth } from '../firebase';
 
 export default function CodeGeneratorTab() {
   const [searchEmail, setSearchEmail] = useState('');
@@ -36,14 +41,23 @@ export default function CodeGeneratorTab() {
   const [foundUser, setFoundUser] = useState(null);
   const [searchError, setSearchError] = useState('');
   const [showManualDeviceId, setShowManualDeviceId] = useState(false);
+  const [formError, setFormError] = useState('');
 
   const [deviceId, setDeviceId] = useState('');
   const [selectedDate, setSelectedDate] = useState(getTodayDateString());
   const [selectedActionCode, setSelectedActionCode] = useState('101');
   const [targetPayload, setTargetPayload] = useState('');
-  const [secretKey, setSecretKey] = useState(DEFAULT_MASTER_SECRET);
+  // Seeded from VITE_SUPPORT_MASTER_SECRET; empty means "not configured" and blocks generation.
+  const [secretKey, setSecretKey] = useState(() => {
+    try {
+      return loadMasterSecret();
+    } catch {
+      return '';
+    }
+  });
   const [showSecret, setShowSecret] = useState(false);
   const [reason, setReason] = useState('User verified via Gmail lookup');
+  const [adminEmail, setAdminEmail] = useState(() => getAdminEmail());
 
   const [generatedResult, setGeneratedResult] = useState(null);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -52,6 +66,21 @@ export default function CodeGeneratorTab() {
 
   const currentAction =
     ACTION_DEFINITIONS.find((a) => a.code === selectedActionCode) || ACTION_DEFINITIONS[0];
+
+  const acceptableDates = getAcceptableDates();
+  const dateBounds = {
+    min: acceptableDates.slice().sort()[0],
+    max: acceptableDates.slice().sort().reverse()[0]
+  };
+  const secretConfigured = isMasterSecretConfigured();
+  const deviceIdLooksMalformed = deviceId.length > 0 && !isWellFormedDeviceId(deviceId);
+  const dateIsOutsideWindow = !isDateWithinGraceWindow(selectedDate);
+
+  useEffect(() => {
+    setAdminEmail(getAdminEmail());
+    const unsubscribe = subscribeToAuth((user) => setAdminEmail(user?.email || null));
+    return () => unsubscribe();
+  }, []);
 
   const handleSearchUserByEmail = async (e) => {
     e?.preventDefault();
@@ -91,13 +120,38 @@ export default function CodeGeneratorTab() {
 
   const handleGenerate = (e) => {
     e?.preventDefault();
+    setFormError('');
+
+    // Fail before signing rather than after: a code generated under the wrong secret looks
+    // identical to a correct one and simply never verifies on the phone.
+    if (!secretConfigured && !(secretKey || '').trim()) {
+      setFormError(
+        'Master secret is not configured. Create admin-panel/.env from .env.example and set VITE_SUPPORT_MASTER_SECRET to the same value the app build uses, then restart the panel.'
+      );
+      return;
+    }
+    if (!normalizeDeviceId(deviceId)) {
+      setFormError('Device ID is required.');
+      return;
+    }
+    if (currentAction.requiresTarget && !targetPayload.trim()) {
+      setFormError(`"${currentAction.name}" needs a target — ${currentAction.targetPlaceholder || 'enter the target identifier'}.`);
+      return;
+    }
+    if (dateIsOutsideWindow) {
+      setFormError(
+        `${selectedDate} is outside the dates the app accepts (${acceptableDates.join(', ')}). Pick a highlighted day instead.`
+      );
+      return;
+    }
+
     try {
       const result = generateSupportCode({
         deviceId,
         dateStr: selectedDate,
         actionCode: selectedActionCode,
         targetPayload: currentAction.requiresTarget ? targetPayload : '',
-        secretKey
+        secretKey: (secretKey || '').trim() || loadMasterSecret()
       });
 
       setGeneratedResult(result);
@@ -116,19 +170,21 @@ export default function CodeGeneratorTab() {
         // Safe fallback
       }
 
-      // Record in audit log
+      // Record in audit log. The raw code is stripped before it reaches Firestore, and the
+      // operator is attributed from the signed-in session instead of a canned address.
       recordAuditLog({
         deviceId: result.normDevice,
         dateStr: result.normDate,
         actionCode: result.normAction,
         actionName: currentAction.name,
-        targetPayload: currentAction.requiresTarget ? targetPayload : '',
+        targetPayload: currentAction.requiresTarget ? targetPayload.trim().toLowerCase() : '',
         code: result.code,
+        codeFingerprint: result.codeFingerprint,
         reason: reason.trim() || 'Manual support generation',
-        adminEmail: 'support-agent@focusguard.app'
+        adminEmail: adminEmail || 'UNATTRIBUTED — no signed-in admin'
       });
     } catch (err) {
-      alert(err.message || 'Error generating code');
+      setFormError(err.message || 'Error generating code');
     }
   };
 
@@ -146,6 +202,7 @@ export default function CodeGeneratorTab() {
       code: generatedResult.code,
       actionCode: generatedResult.normAction,
       targetPayload: currentAction.requiresTarget ? targetPayload : '',
+      dateStr: generatedResult.normDate,
       language: msgLang
     });
     navigator.clipboard.writeText(msg);
@@ -173,6 +230,31 @@ export default function CodeGeneratorTab() {
           </div>
 
           <form onSubmit={handleGenerate} className="generator-form">
+            {/* Blocking configuration/state errors, shown inline instead of an alert() popup. */}
+            {(formError || !secretConfigured) && (
+              <div
+                role="alert"
+                style={{
+                  marginBottom: '12px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#FCA5A5',
+                  fontSize: '12px',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '8px'
+                }}
+              >
+                <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span>
+                  {formError ||
+                    'VITE_SUPPORT_MASTER_SECRET is not set, so codes cannot be signed. Copy admin-panel/.env.example to admin-panel/.env, then restart the panel.'}
+                </span>
+              </div>
+            )}
+
             {/* ── GMAIL USER LOOKUP (PRIMARY) ── */}
             <div className="input-group">
               <label htmlFor="gmail-search-input" className="input-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -353,6 +435,14 @@ export default function CodeGeneratorTab() {
                   <span className="input-hint">
                     Format: FG-XXXX-XXXX. Found inside user app &rarr; Settings &rarr; Support &rarr; Offline Fallback.
                   </span>
+                  {/* Canonicalization strips spaces/lowercase, but hyphens are part of the signed
+                      payload — "FG88214902" and "FG-8821-4902" are different devices to the app. */}
+                  {deviceIdLooksMalformed && (
+                    <span className="input-hint" style={{ color: '#FCA5A5' }}>
+                      Unusual Device ID: expected FG-XXXX-XXXX. Signing as{' '}
+                      <strong>{normalizeDeviceId(deviceId)}</strong> — confirm this with the user before sending.
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -388,10 +478,18 @@ export default function CodeGeneratorTab() {
                   id="date-picker"
                   type="date"
                   value={selectedDate}
+                  min={dateBounds.min}
+                  max={dateBounds.max}
                   onChange={(e) => setSelectedDate(e.target.value)}
                   className="date-input"
                 />
               </div>
+              {/* The phone only accepts these four date strings; a free-typed date outside them
+                  produces a code that can never verify. */}
+              <span className="input-hint">
+                Accepted today: {acceptableDates.join(', ')}
+                {dateIsOutsideWindow ? ' — selected date is NOT accepted by the app.' : ''}
+              </span>
             </div>
 
             {/* Action Selection Grid */}
@@ -497,7 +595,10 @@ export default function CodeGeneratorTab() {
                     title="Master Secret Salt Key"
                   />
                   <span className="input-hint">
-                    This key matches the Android app's local decryption engine. Do not change unless updating app build.
+                    Loaded key: {describeMasterSecret(secretKey)} — must equal the app build's
+                    local.properties <code>support.master.secret</code>. Only edit this for a
+                    deliberate secret rotation; a mismatched key still produces well-formed codes
+                    that the phone will reject.
                   </span>
                 </div>
               )}
@@ -521,7 +622,9 @@ export default function CodeGeneratorTab() {
             <div className="glass-card result-display-card animate-fade-in">
               <div className="result-header">
                 <span className="badge badge-emerald">Ready for User</span>
-                <span className="result-time">Valid Today until Midnight</span>
+                <span className="result-time">
+                  Signed for {generatedResult.normDate} &bull; single-use on this device
+                </span>
               </div>
 
               {/* Big 6-Digit PIN Box */}
@@ -567,8 +670,37 @@ export default function CodeGeneratorTab() {
                   <li>
                     Bypasses no other locks — all other blocked apps and uninstall limits stay <strong>100% active</strong>.
                   </li>
-                  <li>Automatically expires at midnight (or next day depending on timezone grace).</li>
+                  <li>
+                    Stays verifiable while the phone's date is within one day of {generatedResult.normDate}
+                    {' '}(local, UTC-day, yesterday or tomorrow) — not "until midnight".
+                  </li>
+                  <li>The app records this code as spent, so re-entering the same PIN returns "already used".</li>
                 </ul>
+                <div className="input-hint" style={{ marginTop: '8px', wordBreak: 'break-all' }}>
+                  Ledger fingerprint: <code>{generatedResult.codeFingerprint}</code>
+                  {' '}— matches the value the app logs; quote it when a user says a code was rejected.
+                </div>
+                {currentAction.userNote && (
+                  <div
+                    style={{
+                      marginTop: '10px',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      background: currentAction.code === '999' || currentAction.code === '101'
+                        ? 'rgba(244, 63, 94, 0.12)'
+                        : 'rgba(251, 191, 36, 0.1)',
+                      border: currentAction.code === '999' || currentAction.code === '101'
+                        ? '1px solid rgba(244, 63, 94, 0.35)'
+                        : '1px solid rgba(251, 191, 36, 0.3)',
+                      color: currentAction.code === '999' || currentAction.code === '101'
+                        ? '#FCA5A5'
+                        : '#FCD34D',
+                      fontSize: '12px'
+                    }}
+                  >
+                    {currentAction.userNote}
+                  </div>
+                )}
               </div>
 
               {/* Pre-formatted WhatsApp / Email Template */}
@@ -603,6 +735,7 @@ export default function CodeGeneratorTab() {
                       code: generatedResult.code,
                       actionCode: generatedResult.normAction,
                       targetPayload: currentAction.requiresTarget ? targetPayload : '',
+                      dateStr: generatedResult.normDate,
                       language: msgLang
                     })}
                   </pre>

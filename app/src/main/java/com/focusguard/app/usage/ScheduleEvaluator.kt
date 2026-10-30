@@ -1,7 +1,7 @@
 package com.focusguard.app.usage
 
 import android.util.Log
-import com.focusguard.app.data.db.ScheduleEntity
+import com.focusguard.app.core.database.entity.ScheduleEntity
 import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
