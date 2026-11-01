@@ -2,7 +2,6 @@ package com.focusguard.app
 
 import android.app.Application
 import androidx.work.*
-import com.focusguard.app.service.ProtectionWatchdogService
 import com.focusguard.app.worker.AccessibilityHealthWorker
 import com.focusguard.app.worker.UsagePollingWorker
 import dagger.hilt.android.HiltAndroidApp
@@ -19,7 +18,7 @@ import javax.inject.Inject
 /**
  * FocusGuardApplication
  * ====================
- * App entry point — initializes Hilt DI, starts Foreground Watchdog Service, schedules periodic background workers,
+ * App entry point -- initializes Hilt DI, starts Foreground Watchdog Service, schedules periodic background workers,
  * and starts CloudSyncEngine for offline-first bidirectional synchronization.
  */
 @HiltAndroidApp
@@ -33,7 +32,7 @@ class FocusGuardApplication : Application() {
 
     override fun onCreate() {
         // ── ANTI-CLONING INTEGRITY GUARD: Primary User (Owner) Verification ─
-        // CRITICAL: This MUST be the very first statement — before super.onCreate() triggers
+        // CRITICAL: This MUST be the very first statement -- before super.onCreate() triggers
         // Hilt field injection (which starts Firebase/Firestore, CloudSyncEngine, etc.).
         // In Android, primary user is User 0. Cloners & OEM Dual Apps run under User 999, 95, etc.
         // FocusGuard strictly forbids running as a cloned instance.
@@ -89,13 +88,6 @@ class FocusGuardApplication : Application() {
             registerProcessLevelAccessibilityObserver()
         }
 
-        // BlockerHero architecture: No persistent foreground service / notification needed.
-        // AccessibilityService and Device Admin handle 100% of protection natively without battery warning.
-        try {
-            ProtectionWatchdogService.stopService(this)
-        } catch (e: Throwable) {
-            android.util.Log.d("FocusGuardApp", "ProtectionWatchdogService stopService error: ${e.message}")
-        }
     }
 
     private fun registerProcessLevelAccessibilityObserver() {

@@ -2,66 +2,153 @@ package com.focusguard.app.feature.timelimits.data.repository
 
 import com.focusguard.app.core.common.result.AppError
 import com.focusguard.app.core.common.result.AppResult
+import com.focusguard.app.core.database.dao.AppTimeLimitDao
+import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.entity.AppTimeLimitEntity
 import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.database.entity.ChangeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
 import com.focusguard.app.core.model.AppInfo
-import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
 import com.focusguard.app.feature.timelimits.domain.repository.TimeLimitRepository
+import com.focusguard.app.usage.LimitStatus
 import com.focusguard.app.usage.TimeLimitEvaluator
 import com.focusguard.app.usage.UsageStatsReader
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Calendar
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * =====================================================================
- * TimeLimitRepositoryImpl.kt - Repository Implementation Layer
- * =====================================================================
- *
- * ## 1. Yeh File Kya Karti Hai? (Core Responsibility)
- * Yeh class [TimeLimitRepository] interface ki concrete implementation hai.
- * Iska main kaam installed apps ki screen time usage query karna, Room database me
- * daily time caps save karna, accountability challenges manage karna, aur
- * [TimeLimitEvaluator] ke through real-time usage check karna hai.
- *
- * ## 2. Core Operations & Data Sources:
- * - `getInstalledApps()`: Device ke installed apps ki list provide karta hai.
- * - `getAllTimeLimits()`: Room DB ke `app_time_limits` table se reactive `Flow` stream deta hai.
- * - `getTodayUsageBatch()`: Android `UsageStatsManager` se midnight se lekar ab tak ka exact foreground time nikalta hai.
- * - `getTodayForegroundMinutes(packageName)`: [TimeLimitEvaluator] se live in-memory session time aur historical stats combine karke deta hai.
- * - `setTimeLimit()`: Specific app ka daily limit (minutes me) set karta hai aur Room + in-memory cache sync karta hai.
- * - `removeTimeLimit()`: App ka daily limit remove karta hai (unrestricted browsing).
- * - `activateChallengeForLimit()`: First-time limit lagate waqt ya friction enable karte waqt commitment sentence save karta hai.
- *
- * ## 3. Performance & Safety (Senior Dev Perspective):
- * - **IO Dispatcher Concurrency:** Saare database aur heavy operations `@IoDispatcher` par
- *   `withContext(ioDispatcher)` me run hote hain taaki UI thread 120Hz smooth rahe.
- * - **Result Wrapper:** Saare suspend methods [AppResult.Success] ya [AppResult.Failure] return karte hain
- *   taaki exceptions silently swallow na hon aur UI ko clear status mile.
- * =====================================================================
- */
 @Singleton
 class TimeLimitRepositoryImpl @Inject constructor(
-    private val focusGuardRepository: FocusGuardRepository,
+    private val appTimeLimitDao: AppTimeLimitDao,
+    private val pendingChangeDao: PendingChangeDao,
+    private val prefs: FocusGuardPreferences,
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase,
     private val usageStatsReader: UsageStatsReader,
     private val timeLimitEvaluator: TimeLimitEvaluator,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : TimeLimitRepository {
 
+    // ── Single Owner of In-Memory Time Limit Caches ──
+    private val cachedTimeLimits = ConcurrentHashMap<String, AppTimeLimitEntity>()
+    private val cachedExceededTimeLimits = ConcurrentHashMap.newKeySet<String>()
+    private val cachedExceededDateCode = AtomicInteger(
+        Calendar.getInstance().let { it.get(Calendar.YEAR) * 1000 + it.get(Calendar.DAY_OF_YEAR) }
+    )
+    private val repoScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+
+    init {
+        repoScope.launch {
+            try {
+                appTimeLimitDao.watchAllTimeLimits().collect { list ->
+                    cachedTimeLimits.clear()
+                    for (item in list) {
+                        if (item.isEnabled) {
+                            cachedTimeLimits[item.packageName.lowercase()] = item
+                        }
+                    }
+                    prefs.updateSyncCounts(limits = cachedTimeLimits.size)
+                    refreshExceededTimeLimits()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    // ── Entity Flows (used by FocusGuardRepository facade) ──
+    val activeTimeLimitsCount: Flow<Int> = appTimeLimitDao.countActive()
+
+    // ── Fast In-Memory Cache Reads (0ms for accessibility & UI) ──
+    fun getFastTimeLimits(): Map<String, AppTimeLimitEntity> = cachedTimeLimits
+    fun hasFastTimeLimit(packageName: String): Boolean = cachedTimeLimits.containsKey(packageName.lowercase())
+
+    private fun getTodayDateCode(): Int {
+        val cal = Calendar.getInstance()
+        return cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR)
+    }
+
+    fun isFastTimeLimitExceeded(packageName: String): Boolean {
+        val todayCode = getTodayDateCode()
+        if (cachedExceededDateCode.get() != todayCode) {
+            if (cachedExceededDateCode.getAndSet(todayCode) != todayCode) {
+                cachedExceededTimeLimits.clear()
+                refreshExceededTimeLimits()
+            }
+            return false
+        }
+        return cachedExceededTimeLimits.contains(packageName.lowercase())
+    }
+
+    fun markTimeLimitExceeded(packageName: String) {
+        cachedExceededTimeLimits.add(packageName.lowercase())
+    }
+
+    fun clearTimeLimitExceeded(packageName: String) {
+        cachedExceededTimeLimits.remove(packageName.lowercase())
+    }
+
+    fun refreshExceededTimeLimits() {
+        for ((pkg, entity) in cachedTimeLimits) {
+            if (entity.isEnabled) {
+                val status = timeLimitEvaluator.evaluate(pkg, entity)
+                if (status is LimitStatus.Exceeded) {
+                    cachedExceededTimeLimits.add(pkg)
+                } else {
+                    cachedExceededTimeLimits.remove(pkg)
+                }
+            }
+        }
+    }
+
+    // ── Direct Database Operations ──
+    suspend fun setTimeLimitDirect(
+        packageName: String,
+        appName: String,
+        dailyLimitMinutes: Int,
+        isEnabled: Boolean = true
+    ) = withContext(ioDispatcher) {
+        val entity = AppTimeLimitEntity(
+            packageName = packageName,
+            appName = appName,
+            dailyLimitMinutes = dailyLimitMinutes,
+            isEnabled = isEnabled
+        )
+        appTimeLimitDao.upsert(entity)
+        if (isEnabled) {
+            cachedTimeLimits[packageName.lowercase()] = entity
+        } else {
+            cachedTimeLimits.remove(packageName.lowercase())
+        }
+        refreshExceededTimeLimits()
+    }
+
+    suspend fun removeTimeLimitDirect(packageName: String) = withContext(ioDispatcher) {
+        appTimeLimitDao.delete(packageName)
+        cachedTimeLimits.remove(packageName.lowercase())
+        cachedExceededTimeLimits.remove(packageName.lowercase())
+    }
+
+    // ── Domain Interface Implementation (TimeLimitRepository) ──
     override fun getInstalledApps(): Flow<List<AppInfo>> =
         getInstalledAppsUseCase.execute()
 
     override fun getAllTimeLimits(): Flow<List<AppTimeLimitEntity>> =
-        focusGuardRepository.allTimeLimits
+        appTimeLimitDao.watchAllTimeLimits()
 
     override fun getPendingChanges(): Flow<List<PendingChangeEntity>> =
-        focusGuardRepository.pendingChanges
+        pendingChangeDao.watchPendingChanges().map { list ->
+            list.filter { it.changeType == ChangeType.DISABLE_LIMIT || it.changeType == ChangeType.LOWER_LIMIT }
+        }
 
     override fun hasUsagePermission(): Boolean =
         usageStatsReader.hasUsageAccessPermission()
@@ -79,7 +166,7 @@ class TimeLimitRepositoryImpl @Inject constructor(
         isEnabled: Boolean
     ): AppResult<Unit> = withContext(ioDispatcher) {
         try {
-            focusGuardRepository.setTimeLimit(packageName, appName, dailyLimitMinutes, isEnabled)
+            setTimeLimitDirect(packageName, appName, dailyLimitMinutes, isEnabled)
             AppResult.Success(Unit)
         } catch (e: Exception) {
             AppResult.Failure(
@@ -95,7 +182,7 @@ class TimeLimitRepositoryImpl @Inject constructor(
     override suspend fun removeTimeLimit(packageName: String): AppResult<Unit> =
         withContext(ioDispatcher) {
             try {
-                focusGuardRepository.removeTimeLimit(packageName)
+                removeTimeLimitDirect(packageName)
                 AppResult.Success(Unit)
             } catch (e: Exception) {
                 AppResult.Failure(
@@ -111,7 +198,7 @@ class TimeLimitRepositoryImpl @Inject constructor(
     override suspend fun cancelPendingChange(id: Long): AppResult<Unit> =
         withContext(ioDispatcher) {
             try {
-                focusGuardRepository.cancelPendingChange(id)
+                pendingChangeDao.deleteById(id)
                 AppResult.Success(Unit)
             } catch (e: Exception) {
                 AppResult.Failure(
@@ -129,15 +216,16 @@ class TimeLimitRepositoryImpl @Inject constructor(
         sentence: String
     ): AppResult<Unit> = withContext(ioDispatcher) {
         try {
-            focusGuardRepository.setChallengeType(type)
-            focusGuardRepository.setCommitmentSentence(sentence)
-            focusGuardRepository.setChallengeActive(true)
+            prefs.setChallengeType(type)
+            prefs.setCommitmentSentence(sentence)
+            prefs.setChallengeActive(true)
             AppResult.Success(Unit)
         } catch (e: Exception) {
             AppResult.Failure(
                 AppError.SecurityError(
                     errorCode = "SEC-033",
-                    errorMessage = e.localizedMessage ?: "Failed to activate challenge"
+                    errorMessage = e.localizedMessage ?: "Failed to activate challenge",
+                    throwable = e
                 )
             )
         }

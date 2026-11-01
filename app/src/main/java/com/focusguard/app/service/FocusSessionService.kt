@@ -33,7 +33,7 @@ class FocusSessionService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "channel_focus_session_lock"
-        private const val NOTIFICATION_ID = 4040
+        private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_FOCUS_SESSION_ONGOING
         private const val COMPLETION_NOTIFICATION_ID = 4041
 
         const val ACTION_START_SESSION = "com.focusguard.app.action.START_SESSION"

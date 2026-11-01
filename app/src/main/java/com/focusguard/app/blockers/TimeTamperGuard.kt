@@ -28,10 +28,10 @@ object TimeTamperGuard {
 
     // Thresholds:
     // Clock rollback: wall clock moved backward by more than 30 seconds
-    private const val ROLLBACK_THRESHOLD_MS = -30_000L
+    private const val ROLLBACK_THRESHOLD_MS = -com.focusguard.app.core.common.constants.Timings.TAMPER_CHECK_INTERVAL_MS
     // Time jump forward: wall clock jumped forward without matching hardware elapsed time.
     // Set to 60s to safely accommodate cellular NTP network sync, timezone shifts, and Doze wakeups.
-    private const val DRIFT_TOLERANCE_MS = 60_000L
+    private const val DRIFT_TOLERANCE_MS = com.focusguard.app.core.common.constants.Timings.ONE_MINUTE_MS
 
     /**
      * Resets the hardware baseline when the system broadcasts an official time or timezone change,

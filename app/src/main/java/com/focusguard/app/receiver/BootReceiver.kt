@@ -7,7 +7,6 @@ import android.util.Log
 import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.recovery.AccessibilityRecoveryHelper
-import com.focusguard.app.service.ProtectionWatchdogService
 import com.focusguard.app.worker.AccessibilityHealthWorker
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -105,12 +104,6 @@ class BootReceiver : BroadcastReceiver() {
                 Log.w(TAG, "Failed to schedule health check: ${e.message}")
             }
 
-            // STEP C: Ensure no dangling background services
-            try {
-                ProtectionWatchdogService.stopService(context)
-            } catch (e: Exception) {
-                Log.d(TAG, "ProtectionWatchdogService stopService error: ${e.message}")
-            }
 
             // STEP D: Reconcile any pending time-delay changes that matured while device was off
             val pendingResult = goAsync()

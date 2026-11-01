@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -25,8 +26,9 @@ import javax.inject.Singleton
 @Singleton
 class GetInstalledAppsUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val repository: FocusGuardRepository
+    private val repositoryProvider: Provider<FocusGuardRepository>
 ) {
+    private val repository: FocusGuardRepository get() = repositoryProvider.get()
 
     private val packageManager: PackageManager = context.packageManager
     private var cachedRawApps: List<AppInfo>? = null

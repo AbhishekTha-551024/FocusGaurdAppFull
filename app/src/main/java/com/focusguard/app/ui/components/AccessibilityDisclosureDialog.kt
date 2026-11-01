@@ -114,7 +114,7 @@ fun AccessibilityDisclosureDialog(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "FocusGuard uses Android AccessibilityService to detect when you launch blocked apps, view YouTube Shorts or Instagram Reels, or access blocked websites in real time.",
+                                    text = "What is read: FocusGuard inspects the foreground app, browser address bars, search text and YouTube video titles only to enforce your app blocks, schedules, adult-content filters and keyword rules.",
                                     color = Color.White.copy(alpha = 0.9f),
                                     fontSize = 12.sp,
                                     lineHeight = 17.sp
@@ -132,7 +132,7 @@ fun AccessibilityDisclosureDialog(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "Privacy Guarantee: 100% on-device processing. FocusGuard NEVER collects, stores, logs, or transmits personal data, keystrokes, messages, or browsing history.",
+                                    text = "Privacy & processing: On-screen text is analyzed in memory on your device and is not uploaded or shared. A block history (which app was blocked and which of your own rules matched) is kept only on your device.",
                                     color = Color.White.copy(alpha = 0.9f),
                                     fontSize = 12.sp,
                                     lineHeight = 17.sp

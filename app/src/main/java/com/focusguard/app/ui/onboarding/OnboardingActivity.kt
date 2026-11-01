@@ -34,7 +34,6 @@ import com.focusguard.app.feature.session.ui.SessionViewModel
 import com.focusguard.app.feature.settings.ui.SettingsViewModel
 import com.focusguard.app.feature.timelimits.ui.TimeLimitViewModel
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
-import com.focusguard.app.service.ProtectionWatchdogService
 import com.focusguard.app.feature.auth.ui.components.SignInRequiredDialog
 import com.focusguard.app.ui.navigation.MainBottomBar
 import com.focusguard.app.ui.navigation.MainContentPager
@@ -65,8 +64,6 @@ class OnboardingActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        ProtectionWatchdogService.stopService(this)
 
         if (intent?.getBooleanExtra("deactivate_admin", false) == true) {
             FocusGuardDeviceAdminReceiver.deactivateDeviceAdmin(this)

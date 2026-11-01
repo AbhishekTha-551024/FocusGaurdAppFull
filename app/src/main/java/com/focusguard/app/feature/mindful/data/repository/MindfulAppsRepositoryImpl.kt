@@ -5,9 +5,9 @@ import com.focusguard.app.core.common.result.AppResult
 import com.focusguard.app.core.database.entity.ChallengeType
 import com.focusguard.app.core.database.entity.MindfulAppEntity
 import com.focusguard.app.core.database.entity.MindfulIntentLogEntity
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
 import com.focusguard.app.core.model.AppInfo
-import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.data.repository.MindfulRepository
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
 import com.focusguard.app.feature.mindful.domain.repository.MindfulAppsRepository
@@ -20,7 +20,7 @@ import javax.inject.Singleton
 @Singleton
 class MindfulAppsRepositoryImpl @Inject constructor(
     private val mindfulRepository: MindfulRepository,
-    private val focusGuardRepository: FocusGuardRepository,
+    private val prefs: FocusGuardPreferences,
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : MindfulAppsRepository {
@@ -100,9 +100,9 @@ class MindfulAppsRepositoryImpl @Inject constructor(
         sentence: String
     ): AppResult<Unit> = withContext(ioDispatcher) {
         try {
-            focusGuardRepository.setChallengeType(type)
-            focusGuardRepository.setCommitmentSentence(sentence)
-            focusGuardRepository.setChallengeActive(true)
+            prefs.setChallengeType(type)
+            prefs.setCommitmentSentence(sentence)
+            prefs.setChallengeActive(true)
             AppResult.Success(Unit)
         } catch (e: Exception) {
             AppResult.Failure(

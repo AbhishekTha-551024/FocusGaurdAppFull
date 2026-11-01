@@ -105,9 +105,10 @@ class BlockOverlayManager @Inject constructor(
         onAttached: () -> Unit = {},
         onDismissed: () -> Unit = {}
     ) {
+        Log.i(TAG, "showOverlay called: type=$blockType target=$targetName pkg=$sourcePackage duration=${durationSeconds}s isAlreadyShowing=$_isShowing")
         if (_isShowing) {
             Log.d(TAG, "showOverlay: Overlay is already showing, re-asserting and resetting timer for $sourcePackage.")
-            dismissInternal()
+            dismissInternal("showOverlay_reassert")
         }
 
         // Fast path: If already on Main Looper (typical for AccessibilityService events), execute immediately!
@@ -345,37 +346,39 @@ class BlockOverlayManager @Inject constructor(
         try {
             // Defensively ensure any previously attached view is detached first to prevent "View already added" crash
             if (currentOverlayView != null) {
-                dismissInternal()
+                dismissInternal("attachOverlay_cleanup")
             }
             wm.addView(view, params)
             currentOverlayView = view
             _isShowing = true
-            Log.i(TAG, "TYPE_ACCESSIBILITY_OVERLAY attached successfully with immersive system bars hidden.")
+            Log.i(TAG, "addView SUCCESS: windowType=${params.type} view=$view hash=${view.hashCode()} with immersive system bars hidden.")
             view.post {
                 applyImmersiveMode(view)
+                val isAttached = view.isAttachedToWindow
+                Log.i(TAG, "onAttached fired: view.isAttachedToWindow=$isAttached")
                 onAttached()
             }
         } catch (e: WindowManager.BadTokenException) {
-            Log.e(TAG, "WindowManager BadTokenException attaching overlay — service may be recycling", e)
-            dismissInternal()
+            Log.e(TAG, "addView FAILED: WindowManager.BadTokenException attaching overlay — service may be recycling", e)
+            dismissInternal("bad_token_exception")
         } catch (e: IllegalStateException) {
-            Log.e(TAG, "WindowManager IllegalStateException attaching overlay (view already added)", e)
-            dismissInternal()
+            Log.e(TAG, "addView FAILED: WindowManager.IllegalStateException attaching overlay (view already added)", e)
+            dismissInternal("illegal_state_exception")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to attach overlay window", e)
-            dismissInternal()
+            Log.e(TAG, "addView FAILED: ${e.javaClass.simpleName} attaching overlay window: ${e.message}", e)
+            dismissInternal("exception_${e.javaClass.simpleName}")
         }
     }
 
     fun dismissOverlay() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            dismissInternal()
+            dismissInternal("dismissOverlay_direct")
         } else {
-            mainHandler.post { dismissInternal() }
+            mainHandler.post { dismissInternal("dismissOverlay_posted") }
         }
     }
 
-    private fun dismissInternal() {
+    private fun dismissInternal(callerReason: String = "unknown") {
         // 1. Cancel pending dismiss callback
         dismissRunnable?.let { mainHandler.removeCallbacks(it) }
         dismissRunnable = null
@@ -385,12 +388,13 @@ class BlockOverlayManager @Inject constructor(
             try {
                 (view as? ComposeView)?.disposeComposition()
                 windowManager?.removeViewImmediate(view)
-                Log.i(TAG, "Overlay view removed immediately from WindowManager.")
+                Log.i(TAG, "Overlay removed: immediately from WindowManager (caller=$callerReason).")
             } catch (e: Exception) {
                 try {
                     windowManager?.removeView(view)
+                    Log.i(TAG, "Overlay removed: via fallback removeView (caller=$callerReason).")
                 } catch (e2: Exception) {
-                    Log.w(TAG, "Error removing overlay view: ${e2.message}")
+                    Log.w(TAG, "Error removing overlay view: ${e2.message} (caller=$callerReason)")
                 }
             }
         }

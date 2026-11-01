@@ -61,10 +61,6 @@
          and live SafeSearch IP resolution (InetAddress.getAllByName). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- VpnService binding permission for DNS-layer adult content filter -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"
-        tools:ignore="ProtectedPermissions" />
-
     <application
         android:name=".FocusGuardApplication"
         android:allowBackup="false"
@@ -130,14 +126,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
-
-        <!-- ============================================================
-             STICKY FOREGROUND WATCHDOG SERVICE
-             ============================================================ -->
-        <service
-            android:name=".service.ProtectionWatchdogService"
-            android:exported="false"
-            android:enabled="false" />
 
         <!-- ============================================================
              BOOT COVER SHIELD SERVICE (Temporary Post-Boot Intercept)

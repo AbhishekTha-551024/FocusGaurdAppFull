@@ -13,7 +13,6 @@ import androidx.work.*
 import com.focusguard.app.R
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.service.FocusGuardAccessibilityService
-import com.focusguard.app.service.ProtectionWatchdogService
 import com.focusguard.app.ui.onboarding.OnboardingActivity
 import com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity
 import dagger.hilt.EntryPoint
@@ -24,7 +23,7 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "AccessibilityHealth"
 private const val CHANNEL_ID = "focusguard_health_channel"
-private const val NOTIFICATION_ID = 9905
+private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_ACCESSIBILITY_HEALTH_ALERT
 
 @EntryPoint
 @InstallIn(SingletonComponent::class)
@@ -38,9 +37,7 @@ interface AccessibilityHealthWorkerEntryPoint {
  * Background watchdog running every 15 minutes to detect and self-heal the "Ghost Accessibility" state.
  *
  * If Android OS killed or froze the AccessibilityService process in the background,
- * this worker:
- * 1. Restarts [ProtectionWatchdogService] (START_STICKY) to restore foreground process priority.
- * 2. Alerts the user via a high-priority notification with a one-tap intent to re-arm the shield.
+ * this worker alerts the user via a high-priority notification with a one-tap intent to re-arm the shield.
  */
 class AccessibilityHealthWorker(
     private val appContext: Context,
@@ -128,7 +125,7 @@ class AccessibilityHealthWorker(
     companion object {
         private const val UNIQUE_WORK_NAME = "focusguard_accessibility_health_watchdog"
         const val CHANNEL_ID = "focusguard_health_channel"
-        const val NOTIFICATION_ID = 9905
+        const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_ACCESSIBILITY_HEALTH_ALERT
 
         fun schedulePeriodicCheck(context: Context) {
             val request = PeriodicWorkRequestBuilder<AccessibilityHealthWorker>(

@@ -49,7 +49,7 @@ class AccessibilityStateObserver(
             // coroutine starts). This prevents handleSecurityTamper() from being called while the
             // OEM scanner is active — that call sends GLOBAL_ACTION_HOME which triggers Vivo's
             // anti-tapjacking watchdog and causes the service to be force-unbound.
-            com.focusguard.app.service.FocusGuardAccessibilityService.markOemScanActive(windowMs = 12_000L)
+            com.focusguard.app.service.FocusGuardAccessibilityService.markOemScanActive(windowMs = com.focusguard.app.core.common.constants.Timings.A11Y_OBSERVER_COOLDOWN_MS)
             Log.d(TAG, "ContentObserver: OEM scan window armed. Starting 7s debounce check...")
 
             if (verificationJob == null || verificationJob?.isActive == false) {

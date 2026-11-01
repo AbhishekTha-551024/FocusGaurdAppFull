@@ -78,7 +78,7 @@ object MultiWindowGuard {
                 if (pkg == ownPkg || pkg.startsWith("com.focusguard.app")) continue
                 // System UI (status bar / nav bar controls)
                 val lowerPkg = pkg.lowercase()
-                if (lowerPkg == "com.android.systemui" || lowerPkg == "android") continue
+                if (lowerPkg == com.focusguard.app.core.common.constants.OemPackages.SYSTEM_UI || lowerPkg == "android") continue
 
                 // When Deep Focus is NOT active, skip launchers (launchers are handled by normal blocker)
                 if (!isSessionActive && (lowerPkg.contains("launcher") || lowerPkg.contains("quickstep") ||
