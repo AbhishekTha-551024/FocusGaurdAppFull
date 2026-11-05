@@ -6,6 +6,7 @@ import android.util.Log
 import com.focusguard.app.blockers.SessionBlockManager
 import com.focusguard.app.core.database.dao.MindfulDao
 import com.focusguard.app.core.datastore.FocusGuardPreferences
+import com.focusguard.app.core.startup.ProtectionStartupReadiness
 import com.focusguard.app.core.model.RulesSnapshot
 import com.focusguard.app.data.repository.FocusGuardRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -28,7 +29,8 @@ class RulesSnapshotSynchronizer @Inject constructor(
     private val repository: FocusGuardRepository,
     private val mindfulDao: MindfulDao,
     private val preferences: FocusGuardPreferences,
-    private val sessionBlockManager: SessionBlockManager
+    private val sessionBlockManager: SessionBlockManager,
+    private val startupReadiness: ProtectionStartupReadiness
 ) {
 
     fun start(scope: CoroutineScope) {
@@ -72,6 +74,7 @@ class RulesSnapshotSynchronizer @Inject constructor(
                 )
             }.collect { snapshot ->
                 snapshotHolder.set(snapshot)
+                startupReadiness.markRulesSnapshotReady()
                 Log.d(
                     TAG,
                     "RulesSnapshot atomically refreshed: ${snapshot.blockedPackages.size} blocked apps, " +

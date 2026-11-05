@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -151,20 +150,9 @@ class SessionLockActivity : ComponentActivity() {
     }
 
     private fun launchDialer() {
-        try {
-            isLaunchingAllowedTool = true
-            val dialIntent = Intent(Intent.ACTION_DIAL).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            }
-            if (dialIntent.resolveActivity(packageManager) != null) {
-                startActivity(dialIntent)
-            } else {
-                val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("tel:")).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
-                startActivity(fallback)
-            }
-        } catch (ex: Exception) {
+        isLaunchingAllowedTool = true
+        if (!SessionDialerLauncher.launch(this)) {
             isLaunchingAllowedTool = false
-            Log.e(TAG, "Error opening dialer", ex)
         }
     }
 

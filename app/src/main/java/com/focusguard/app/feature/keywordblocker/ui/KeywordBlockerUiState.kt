@@ -1,6 +1,6 @@
 package com.focusguard.app.feature.keywordblocker.ui
 
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.feature.keywordblocker.domain.model.BlockedKeyword
 import com.focusguard.app.core.model.ActiveChallengeState

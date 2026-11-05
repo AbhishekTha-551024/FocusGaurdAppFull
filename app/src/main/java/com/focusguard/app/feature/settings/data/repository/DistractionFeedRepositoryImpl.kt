@@ -22,10 +22,10 @@ class DistractionFeedRepositoryImpl @Inject constructor(
     private val repoScope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     // ── Single Owner of In-Memory Distraction Feed Caches ──
-    private val cachedShortsReelsBlockEnabled = AtomicBoolean(false)
-    private val cachedInstagramReelsBlockEnabled = AtomicBoolean(false)
-    private val cachedFacebookReelsBlockEnabled = AtomicBoolean(false)
-    private val cachedYouTubeShortsBlockEnabled = AtomicBoolean(false)
+    private val cachedShortsReelsBlockEnabled = AtomicBoolean(prefs.syncShortsReelsBlockEnabled)
+    private val cachedInstagramReelsBlockEnabled = AtomicBoolean(prefs.syncInstagramReelsBlockEnabled)
+    private val cachedFacebookReelsBlockEnabled = AtomicBoolean(prefs.syncFacebookReelsBlockEnabled)
+    private val cachedYouTubeShortsBlockEnabled = AtomicBoolean(prefs.syncYouTubeShortsBlockEnabled)
     private val cachedIncognitoBlockEnabled = AtomicBoolean(prefs.syncIncognitoBlockEnabled)
     private val cachedBlockUnsupportedBrowsersEnabled = AtomicBoolean(prefs.syncBlockUnsupportedBrowsersEnabled)
     private val cachedAdultContentBlockEnabled = AtomicBoolean(prefs.syncAdultContentBlockEnabled)
@@ -102,6 +102,9 @@ class DistractionFeedRepositoryImpl @Inject constructor(
     // ── Mutations ──
     suspend fun setShortsReelsBlockEnabled(enabled: Boolean) {
         cachedShortsReelsBlockEnabled.set(enabled)
+        cachedInstagramReelsBlockEnabled.set(enabled)
+        cachedFacebookReelsBlockEnabled.set(enabled)
+        cachedYouTubeShortsBlockEnabled.set(enabled)
         prefs.setShortsReelsBlockEnabled(enabled)
     }
 
@@ -140,4 +143,3 @@ class DistractionFeedRepositoryImpl @Inject constructor(
         prefs.setAntiCloningShieldEnabled(enabled)
     }
 }
-

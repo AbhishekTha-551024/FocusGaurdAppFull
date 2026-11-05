@@ -5,6 +5,9 @@ import android.util.Log
 import com.focusguard.app.core.database.entity.*
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
+import com.focusguard.app.domain.policy.ProtectionPolicy
 import com.focusguard.app.feature.appblocker.data.repository.AppBlockerRepositoryImpl
 import com.focusguard.app.feature.keywordblocker.data.repository.KeywordBlockerRepositoryImpl
 import com.focusguard.app.feature.schedules.data.repository.ScheduleRepositoryImpl
@@ -82,6 +85,8 @@ class FocusGuardRepository @Inject constructor(
     fun refreshUninstallProtectionNow() = protectionRepository.refreshUninstallProtectionNow()
     fun isFastTimedLockActive(): Boolean = protectionRepository.isFastTimedLockActive()
     fun getFastTimedLockRemainingDays(): Long = protectionRepository.getFastTimedLockRemainingDays()
+    fun isFastTimedLockDurationElapsed(): Boolean = protectionRepository.isFastTimedLockDurationElapsed()
+    fun fastTimedLockRemainingUptimeMs(): Long = protectionRepository.fastTimedLockRemainingUptimeMs()
     fun isFastShortsReelsBlockEnabled(): Boolean = distractionFeedRepository.isFastShortsReelsBlockEnabled()
     fun isFastInstagramReelsBlockEnabled(): Boolean = distractionFeedRepository.isFastInstagramReelsBlockEnabled()
     fun isFastFacebookReelsBlockEnabled(): Boolean = distractionFeedRepository.isFastFacebookReelsBlockEnabled()
@@ -161,7 +166,7 @@ class FocusGuardRepository @Inject constructor(
 
     // ── Protection & Distraction Controls ──
     suspend fun startTimedUninstallProtection(days: Int) = protectionRepository.startTimedUninstallProtection(days)
-    suspend fun setUninstallProtectionEnabled(enabled: Boolean) = protectionRepository.setUninstallProtectionEnabled(enabled)
+    suspend fun setUninstallProtectionEnabled(enabled: Boolean, challengeAuthorized: Boolean = false) = protectionRepository.setUninstallProtectionEnabled(enabled, challengeAuthorized)
     suspend fun disableUninstallProtection() = protectionRepository.disableUninstallProtection()
     suspend fun setShortsReelsBlockEnabled(enabled: Boolean) = distractionFeedRepository.setShortsReelsBlockEnabled(enabled)
     suspend fun setInstagramReelsBlockEnabled(enabled: Boolean) = distractionFeedRepository.setInstagramReelsBlockEnabled(enabled)
@@ -225,7 +230,7 @@ class FocusGuardRepository @Inject constructor(
             Log.i(TAG, "evaluateAccess -> BLOCKED_BY_APP_BLOCKER: $packageName")
             return AccessDecision.BlockedByAppBlocker(appLabel = appLabel)
         }
-        val scheduleBlock = scheduleEvaluator.isBlockedBySchedule(packageName, scheduleRepository.getFastActiveSchedules(), isAppInBlocklist)
+        val scheduleBlock = scheduleEvaluator.isBlockedBySchedule(packageName, scheduleRepository.getFastActiveSchedules())
         if (scheduleBlock != null) {
             Log.i(TAG, "evaluateAccess -> BLOCKED_BY_SCHEDULE: $packageName by '${scheduleBlock.scheduleTitle}' until ${scheduleBlock.endTimeFormatted}")
             return AccessDecision.BlockedBySchedule(appLabel, scheduleBlock.scheduleTitle, scheduleBlock.endTimeFormatted)
@@ -290,7 +295,6 @@ class FocusGuardRepository @Inject constructor(
         )
 
     companion object {
-        fun isProtectionReallyActive(enabled: Boolean, days: Int, expiry: Long, now: Long): Boolean =
-            ProtectionRepositoryImpl.isProtectionReallyActive(enabled, days, expiry, now)
+        fun isProtectionReallyActive(enabled: Boolean, days: Int, expiry: Long, now: Long): Boolean = ProtectionPolicy.isProtectionActive(enabled, days, expiry, now)
     }
 }

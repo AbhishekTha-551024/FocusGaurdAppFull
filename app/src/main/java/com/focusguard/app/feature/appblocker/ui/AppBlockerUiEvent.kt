@@ -1,7 +1,7 @@
 package com.focusguard.app.feature.appblocker.ui
 
 import android.content.Context
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
 
 sealed interface AppBlockerUiEvent {

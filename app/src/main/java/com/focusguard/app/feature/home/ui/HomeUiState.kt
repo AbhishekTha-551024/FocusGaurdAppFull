@@ -46,5 +46,8 @@ data class HomeUiState(
     val todayImpulsesBlockedCount: Int = 0
 ) {
     val hasMissingRequiredPermissions: Boolean
-        get() = !isAccessibilityEnabled || !isBatteryOptimizationIgnored || !isOverlayGranted
+        get() = !isAccessibilityEnabled ||
+                !permissionStatus.isAccessibilityServiceConnected ||
+                !isBatteryOptimizationIgnored ||
+                !isOverlayGranted
 }

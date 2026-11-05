@@ -34,6 +34,15 @@ object ClassNameMatchers {
     }
 
     /**
+     * Returns true if [className] corresponds to the recents / overview multitasking screen.
+     * Used to release a held block shield when the user switches apps from recents.
+     */
+    fun isRecentsClass(className: String): Boolean {
+        return className.contains("Recents", ignoreCase = true) ||
+                className.contains("Overview", ignoreCase = true)
+    }
+
+    /**
      * Returns true if [pkg] matches known Android/OEM settings, security center,
      * or permission management package substrings (sweepActiveWindowOnConnect).
      */

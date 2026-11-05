@@ -3,8 +3,8 @@ package com.focusguard.app.feature.appblocker.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.ActiveChallengeState
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.data.repository.FocusGuardRepository

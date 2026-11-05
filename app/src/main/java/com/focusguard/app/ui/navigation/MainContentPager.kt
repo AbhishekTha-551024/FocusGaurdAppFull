@@ -12,7 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.feature.appblocker.ui.AppBlockerViewModel
 import com.focusguard.app.feature.auth.ui.AuthUiState
 import com.focusguard.app.feature.auth.ui.AuthViewModel
@@ -140,9 +140,6 @@ fun MainContentPager(
                         onMindfulCancelChallenge = { mindfulAppsViewModel.onCancelChallenge() },
                         onMindfulActivateChallenge = { type, sentence -> mindfulAppsViewModel.onActivateChallengeForApp(type, sentence) },
                         onMindfulDismissAccountability = { mindfulAppsViewModel.onDismissAccountabilityRequired() },
-                        onUpdateMindfulAllowanceMinutes = { pkg, mins -> mindfulAppsViewModel.updateDefaultAllowance(pkg, mins) },
-                        onOpenMindfulJournal = { mindfulAppsViewModel.openJournalDialog() },
-                        onDismissMindfulJournal = { mindfulAppsViewModel.dismissJournalDialog() },
                         onKeywordInputChange = { keywordBlockerViewModel.onKeywordInputChange(it) },
                         onAddKeyword = { keywordBlockerViewModel.addKeyword() },
                         onRemoveKeyword = { keywordBlockerViewModel.removeKeyword(it) },

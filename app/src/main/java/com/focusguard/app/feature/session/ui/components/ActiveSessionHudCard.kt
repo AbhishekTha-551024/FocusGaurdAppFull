@@ -1,6 +1,5 @@
 package com.focusguard.app.feature.session.ui.components
 
-import android.content.Intent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -27,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.feature.session.ui.SessionUiState
+import com.focusguard.app.feature.session.ui.SessionDialerLauncher
 import com.focusguard.app.ui.components.AppIconView
 import kotlinx.coroutines.delay
 
@@ -126,8 +126,7 @@ fun ActiveSessionHudCard(
                     if (launchIntent != null) context.startActivity(launchIntent)
                 },
                 onDialClick = {
-                    val dialIntent = Intent(Intent.ACTION_DIAL).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
-                    context.startActivity(dialIntent)
+                    SessionDialerLauncher.launch(context)
                 }
             )
 

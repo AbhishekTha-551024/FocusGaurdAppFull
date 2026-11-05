@@ -137,13 +137,14 @@ fun UninstallProtectionCard(
                     val subtitleText = when {
                         !isDeviceAdminActive -> "Device Admin is OFF · Tap to activate"
                         isLocked -> "Remaining: $remainingFormatted"
+                        isUninstallProtectionEnabled -> "Active (Permanent) · Uninstallation Protected"
                         else -> "Disabled (Unlocked) · Can be uninstalled"
                     }
                     Text(
                         text = subtitleText,
                         color = when {
                             !isDeviceAdminActive -> Amber400
-                            isLocked -> Rose400
+                            isLocked || isUninstallProtectionEnabled -> Rose400
                             else -> Success
                         },
                         fontSize = 11.5.sp,

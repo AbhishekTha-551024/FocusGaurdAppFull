@@ -1,20 +1,21 @@
 package com.focusguard.app.recovery
 
-import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.UserManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import com.focusguard.app.core.datastore.DirectBootStorage
+import com.focusguard.app.core.datastore.UptimeLedger
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
-import com.focusguard.app.service.FocusGuardAccessibilityService
 import com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity
 import com.focusguard.app.worker.AccessibilityHealthWorker
 
-private const val TAG = "AccessibilityRecovery"
+private const val TAG = "FG:Recovery"
+
+/** Monotonic timestamp of the last restore attempt, shared by every recovery source. */
+private const val KEY_LAST_RESTORE_ATTEMPT_ELAPSED = "a11y_last_restore_attempt_elapsed"
 
 /**
  * AccessibilityRecoveryHelper
@@ -22,16 +23,8 @@ private const val TAG = "AccessibilityRecovery"
  * Handles zero-delay recovery of the Accessibility Service across device reboots,
  * power-cycles, and OEM background app management interventions (especially Vivo/FuntouchOS).
  *
- * Layers of recovery:
- * 1. Fast Silent Re-activation:
- *    If WRITE_SECURE_SETTINGS is granted (via ADB, Shizuku, or Device Owner),
- *    the service is programmatically re-injected into Settings.Secure in < 1ms.
- * 2. Urgent Full-Screen Recovery Activity:
- *    FocusGuard holds SYSTEM_ALERT_WINDOW, allowing background activity launches.
- *    If protection is configured and accessibility was stripped by restart,
- *    [AccessibilityRecoveryActivity] is launched instantly over the screen with a 1-tap restore.
- * 3. Max-Priority Heads-Up & Full-Screen Notification:
- *    Ensures immediate user alert with fullScreenIntent on lock screen or status bar.
+ * Delegates status checks to [AccessibilityStatusChecker] and programmatic enablement
+ * to [ProgrammaticAccessibilityEnabler].
  */
 object AccessibilityRecoveryHelper {
 
@@ -39,162 +32,40 @@ object AccessibilityRecoveryHelper {
      * Checks if FocusGuard's Accessibility Service is currently active in memory
      * OR enabled in the system's secure settings.
      */
-    fun isAccessibilityActive(context: Context): Boolean {
-        // Fast path 1: In-memory live service flag
-        if (FocusGuardAccessibilityService.isServiceRunning) {
-            return true
-        }
-
-        // Fast path 2: Query Android's system AccessibilityManager (authoritative OS framework source)
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? android.view.accessibility.AccessibilityManager
-        if (am == null || !am.isEnabled) {
-            return false
-        }
-
-        val runningServices = try {
-            am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        } catch (_: Exception) {
-            null
-        }
-
-        val isComponentRunning = runningServices?.any {
-            it.resolveInfo?.serviceInfo?.packageName == context.packageName
-        } == true
-
-        if (!isComponentRunning) {
-            return false
-        }
-
-        // Fast path 3: Verify Settings.Secure global toggle and exact component match
-        return try {
-            val isA11yGloballyEnabled = Settings.Secure.getInt(
-                context.contentResolver,
-                Settings.Secure.ACCESSIBILITY_ENABLED,
-                0
-            ) == 1
-            if (!isA11yGloballyEnabled) return false
-
-            val enabledServices = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ) ?: ""
-            val targetComponent = "${context.packageName}/${FocusGuardAccessibilityService::class.java.name}"
-            val shortComponent = "${context.packageName}/.service.FocusGuardAccessibilityService"
-
-            enabledServices.split(":").any { item ->
-                val trimmed = item.trim()
-                trimmed.equals(targetComponent, ignoreCase = true) ||
-                        trimmed.equals(shortComponent, ignoreCase = true)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error checking accessibility status: ${e.message}")
-            false
-        }
-    }
+    fun isAccessibilityActive(context: Context): Boolean =
+        AccessibilityStatusChecker.isAccessibilityActive(context)
 
     /**
      * Checks if the device is currently in Direct Boot mode (before user first unlock).
      */
-    fun isDirectBootLocked(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val userManager = context.getSystemService(UserManager::class.java)
-            userManager != null && !userManager.isUserUnlocked
-        } else {
-            false
-        }
-    }
+    fun isDirectBootLocked(context: Context): Boolean =
+        AccessibilityStatusChecker.isDirectBootLocked(context)
 
     /**
      * Checks if the app has been granted WRITE_SECURE_SETTINGS permission.
      */
-    fun canWriteSecureSettings(context: Context): Boolean {
-        return try {
-            context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
-        } catch (e: Exception) {
-            false
-        }
-    }
+    fun canWriteSecureSettings(context: Context): Boolean =
+        AccessibilityStatusChecker.canWriteSecureSettings(context)
 
     /**
      * Checks if FocusGuard's Accessibility Service is already enabled in Android's
      * Secure Settings (meaning the user or system already turned it ON).
-     *
-     * During device boot, Android's system_server takes several seconds to bind to the
-     * service. This check distinguishes between "already configured, waiting for OS binding"
-     * vs "actually disabled by the user".
      */
-    fun isAccessibilityConfiguredInSettings(context: Context): Boolean {
-        return try {
-            val isA11yGloballyEnabled = Settings.Secure.getInt(
-                context.contentResolver,
-                Settings.Secure.ACCESSIBILITY_ENABLED,
-                0
-            ) == 1
-            if (!isA11yGloballyEnabled) return false
+    fun isAccessibilityConfiguredInSettings(context: Context): Boolean =
+        AccessibilityStatusChecker.isAccessibilityConfiguredInSettings(context)
 
-            val enabledServices = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ) ?: ""
-            val targetComponent = "${context.packageName}/${FocusGuardAccessibilityService::class.java.name}"
-            val shortComponent = "${context.packageName}/.service.FocusGuardAccessibilityService"
-
-            enabledServices.split(":").any { item ->
-                val trimmed = item.trim()
-                trimmed.equals(targetComponent, ignoreCase = true) ||
-                        trimmed.equals(shortComponent, ignoreCase = true)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error checking isAccessibilityConfiguredInSettings: ${e.message}")
-            false
-        }
-    }
+    /**
+     * Strict recovery gate: the service is alive in this process AND still configured in Settings.
+     */
+    fun isAccessibilityHealthy(context: Context): Boolean =
+        AccessibilityStatusChecker.isAccessibilityHealthy(context)
 
     /**
      * LAYER 1: Attempts silent, programmatic re-enablement of FocusGuardAccessibilityService
      * using WRITE_SECURE_SETTINGS permission.
-     *
-     * Returns true if successfully enabled or already enabled, false otherwise.
      */
-    fun tryEnableAccessibilityProgrammatically(context: Context): Boolean {
-        val targetComponent = "${context.packageName}/${FocusGuardAccessibilityService::class.java.name}"
-        return try {
-            val contentResolver = context.contentResolver
-            val currentServices = Settings.Secure.getString(
-                contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ) ?: ""
-
-            val newServices = when {
-                currentServices.contains(targetComponent) -> currentServices
-                currentServices.isBlank() -> targetComponent
-                else -> "$currentServices:$targetComponent"
-            }
-
-            // Always write to re-assert with ContentObserver so system_server re-binds if stalled
-            Settings.Secure.putString(
-                contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-                newServices
-            )
-
-            // Always ensure the master accessibility toggle is ON
-            Settings.Secure.putString(
-                contentResolver,
-                Settings.Secure.ACCESSIBILITY_ENABLED,
-                "1"
-            )
-
-            Log.i(TAG, "Successfully asserted AccessibilityService programmatically via WRITE_SECURE_SETTINGS!")
-            true
-        } catch (e: SecurityException) {
-            Log.d(TAG, "WRITE_SECURE_SETTINGS not granted: ${e.message}")
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to programmatically enable accessibility: ${e.message}", e)
-            false
-        }
-    }
+    fun tryEnableAccessibilityProgrammatically(context: Context): Boolean =
+        ProgrammaticAccessibilityEnabler.tryEnableAccessibilityProgrammatically(context)
 
     /**
      * Invariant Rule 3: Determines if protection is strictly active.
@@ -208,20 +79,22 @@ object AccessibilityRecoveryHelper {
             return false
         }
 
-        // Fast Gate 2: Uninstall protection must be enabled and unexpired
+        // Fast Gate 2: Uninstall protection must be enabled and unexpired.
+        // A TRUE fast-cache read is authoritative. A FALSE read is NOT: right after boot the
+        // repository's init coroutine may not have finished reading DataStore yet, and treating
+        // that stale false as "protection off" is what silently skipped recovery after a reboot.
+        // Fall through to the SharedPreferences / device-protected mirror instead.
         return try {
-            if (repository != null) {
-                repository.isFastUninstallProtectionEnabled()
+            if (repository != null && repository.isFastUninstallProtectionEnabled()) {
+                true
             } else {
-                val syncPrefs = context.getSharedPreferences("focusguard_sync_cache", Context.MODE_PRIVATE)
+                // CE snapshot when unlocked, DE mirror when still locked. The plain CE read used to
+                // throw at direct boot, which made this whole branch return false right after a reboot.
+                val syncPrefs = DirectBootStorage.readCache(context)
                 val enabled = syncPrefs.getBoolean("uninstall_protection_enabled", false)
                 if (enabled) {
                     val expiry = syncPrefs.getLong("uninstall_protection_expiry_timestamp", 0L)
-                    if (expiry <= 0L) true else System.currentTimeMillis() < expiry
-                } else if (isDirectBootLocked(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    val deContext = context.createDeviceProtectedStorageContext()
-                    val dePrefs = deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE)
-                    dePrefs.getBoolean("uninstall_protection_enabled", false)
+                    if (expiry <= 0L) true else !timedLockActuallyOver(context, expiry)
                 } else {
                     false
                 }
@@ -230,6 +103,21 @@ object AccessibilityRecoveryHelper {
             Log.w(TAG, "Error evaluating isProtectionActive: ${e.message}")
             false
         }
+    }
+
+    /**
+     * Wall-clock expiry is only half of the rule. A timed lock is over when the clock is past
+     * [expiry] AND the monotonic verdict published by
+     * [com.focusguard.app.feature.settings.data.repository.ProtectionRepositoryImpl] confirms the
+     * full duration really ran on device uptime. No verdict stored means still running, so this
+     * branch fails closed against a Settings > Date & time jump.
+     */
+    private fun timedLockActuallyOver(context: Context, expiry: Long): Boolean {
+        if (System.currentTimeMillis() < expiry) return false
+        return !DirectBootStorage.deCache(context).getBoolean(
+            UptimeLedger.KEY_TIMED_LOCK_STILL_RUNNING,
+            true
+        )
     }
 
     /**
@@ -246,9 +134,12 @@ object AccessibilityRecoveryHelper {
     ) {
         Log.i(TAG, "restoreProtectionFast triggered from source: $source")
 
-        // 1. If service is already active, cancel any previous health alert and return immediately
-        if (isAccessibilityActive(context)) {
-            Log.i(TAG, "Accessibility service is already active. Dismissing recovery notices.")
+        // 1. If the service is bound AND still listed in Settings, cancel any previous health alert
+        val isConfiguredInSettings = isAccessibilityConfiguredInSettings(context)
+        if (isAccessibilityHealthy(context)) {
+            Log.i(TAG, "Accessibility service is bound and configured. Dismissing recovery notices.")
+            AccessibilityRecoveryScheduler.resetAttempts(context)
+            resetRestoreAttemptGate(context)
             AccessibilityHealthWorker.cancelReactivationNotification(context)
             return
         }
@@ -258,15 +149,34 @@ object AccessibilityRecoveryHelper {
         val isProtected = isProtectionActive(context, repository)
         if (!isProtected) {
             Log.i(TAG, "restoreProtectionFast: Protection is inactive (Uninstall Protection OFF or Admin inactive). Accessibility will stay OFF.")
+            resetRestoreAttemptGate(context)
             AccessibilityHealthWorker.cancelReactivationNotification(context)
             return
         }
+
+        // 2.5 SINGLE DUPLICATE GATE: the ContentObserver, the periodic probe, onUnbind and the
+        // boot receiver can all describe the same failure seconds apart. Only the first trigger
+        // runs the recovery layers; the rest are absorbed here instead of re-launching the
+        // recovery screen or re-posting notifications.
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val lastAttemptElapsed = readLastRestoreAttempt(context)
+        if (AutoRecoveryPolicy.shouldSuppressDuplicate(lastAttemptElapsed, nowElapsed)) {
+            Log.i(
+                TAG,
+                "Duplicate recovery trigger from $source (${nowElapsed - lastAttemptElapsed}ms since last attempt). Already being handled."
+            )
+            return
+        }
+        markRestoreAttempt(context, nowElapsed)
 
         // 3. Try Layer 1: Instant programmatic silent enable (< 1ms) via WRITE_SECURE_SETTINGS
         val programmaticSuccess = tryEnableAccessibilityProgrammatically(context)
         if (programmaticSuccess) {
             Log.i(TAG, "Accessibility restored silently via WRITE_SECURE_SETTINGS from $source!")
             AccessibilityHealthWorker.cancelReactivationNotification(context)
+            // Writing the setting is not proof of binding: system_server still has to start the
+            // process and bind it, and Vivo can drop it again. Verify instead of returning.
+            AccessibilityRecoveryScheduler.scheduleBindingVerification(context)
             return
         }
 
@@ -276,10 +186,12 @@ object AccessibilityRecoveryHelper {
                 source.contains("Admin") ||
                 source.contains("Tamper") ||
                 source.contains("ConfirmedOff")
-        val isConfiguredInSettings = isAccessibilityConfiguredInSettings(context)
         if (isConfiguredInSettings && !isExplicitTamperOrRemoval) {
-            Log.i(TAG, "restoreProtectionFast: Accessibility is configured in Settings.Secure ($source). Allowing OS grace period to bind silently.")
+            Log.i(TAG, "restoreProtectionFast: Accessibility is configured in Settings.Secure ($source). Allowing OS grace period, then verifying the binding.")
             AccessibilityHealthWorker.cancelReactivationNotification(context)
+            // This used to be a plain return: after a reboot the setting is configured while the OS
+            // has not bound (or has abandoned) the service, so trusting it left protection silently OFF.
+            AccessibilityRecoveryScheduler.scheduleBindingVerification(context)
             return
         }
 
@@ -298,7 +210,9 @@ object AccessibilityRecoveryHelper {
             if (Settings.canDrawOverlays(context)) {
                 AccessibilityRecoveryActivity.start(
                     context = context,
-                    reason = "Accessibility was turned off during device restart ($source)."
+                    // The source is passed through verbatim: the shield classifies it, so it must not
+                    // claim "restart" when the caller was a tamper or an app update.
+                    reason = "Accessibility is off ($source)."
                 )
             }
         } catch (e: Exception) {
@@ -326,6 +240,38 @@ object AccessibilityRecoveryHelper {
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to open accessibility settings: ${e.message}", e)
+        }
+    }
+
+    // ── Shared attempt gate ────────────────────────────────────────────────────────────────
+    // Persisted in device-protected storage, like the reboot counters: the gate is needed
+    // before first unlock and from non-Hilt entry points (receiver, worker, service callback).
+
+    private fun readLastRestoreAttempt(context: Context): Long = try {
+        DirectBootStorage.deCache(context).getLong(KEY_LAST_RESTORE_ATTEMPT_ELAPSED, 0L)
+    } catch (e: Exception) {
+        Log.d(TAG, "Could not read last restore attempt: ${e.message}")
+        0L
+    }
+
+    private fun markRestoreAttempt(context: Context, nowElapsed: Long) {
+        try {
+            DirectBootStorage.deCache(context).edit()
+                .putLong(KEY_LAST_RESTORE_ATTEMPT_ELAPSED, nowElapsed)
+                .apply()
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not persist last restore attempt: ${e.message}")
+        }
+    }
+
+    private fun resetRestoreAttemptGate(context: Context) {
+        if (readLastRestoreAttempt(context) == 0L) return
+        try {
+            DirectBootStorage.deCache(context).edit()
+                .putLong(KEY_LAST_RESTORE_ATTEMPT_ELAPSED, 0L)
+                .apply()
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not reset restore attempt gate: ${e.message}")
         }
     }
 }

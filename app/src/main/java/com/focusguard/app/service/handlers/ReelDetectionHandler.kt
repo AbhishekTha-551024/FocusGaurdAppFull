@@ -4,6 +4,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.focusguard.app.blockers.ReelBlocker
 import com.focusguard.app.data.repository.FocusGuardRepository
+import com.focusguard.app.data.repository.isShortFormContentBlocked
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -19,12 +20,7 @@ class ReelDetectionHandler @Inject constructor(
 ) {
     fun isTargetPackage(pkg: String): Boolean = reelBlocker.isTargetPackage(pkg)
 
-    fun isReelBlockedForPkg(pkg: String): Boolean = when (pkg) {
-        ReelBlocker.INSTAGRAM_PACKAGE -> repository.isFastInstagramReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-        ReelBlocker.FACEBOOK_PACKAGE, ReelBlocker.FACEBOOK_LITE_PACKAGE -> repository.isFastFacebookReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-        ReelBlocker.YOUTUBE_PACKAGE -> repository.isFastYouTubeShortsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-        else -> repository.isFastShortsReelsBlockEnabled()
-    }
+    fun isReelBlockedForPkg(pkg: String): Boolean = repository.isShortFormContentBlocked(pkg)
 
     fun detectReelOrShort(
         e: AccessibilityEvent?,
@@ -59,4 +55,3 @@ class ReelDetectionHandler @Inject constructor(
         return null
     }
 }
-

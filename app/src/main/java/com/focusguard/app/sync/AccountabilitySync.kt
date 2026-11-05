@@ -1,9 +1,10 @@
 package com.focusguard.app.sync
 
 import android.util.Log
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.datastore.DEFAULT_COMMITMENT_SENTENCE
 import com.focusguard.app.core.datastore.FocusGuardPreferences
+import com.focusguard.app.domain.policy.ChallengePolicy
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
@@ -56,8 +57,12 @@ class AccountabilitySync @Inject constructor(
                     if (!cloudIsChallengeActive) {
                         Log.w(TAG, "Cloud challenge is inactive while local challenge is ACTIVE. Preserving local active state.")
                     }
+                    // Stricter type wins (PARTNER over TYPING). Preserving the local type verbatim was
+                    // wrong in one direction and cloud-adopting it was wrong in the other: either way a
+                    // sync could quietly downgrade a partner challenge to a self-typed sentence.
+                    val resolvedChallengeType = ChallengePolicy.stricter(localChallengeType, cloudChallengeType)
                     if (cloudChallengeType != localChallengeType) {
-                        Log.w(TAG, "Cloud challengeType ($cloudChallengeType) differs from local ($localChallengeType). Preserving local challenge type.")
+                        Log.w(TAG, "Cloud challengeType ($cloudChallengeType) differs from local ($localChallengeType). Keeping the stricter: $resolvedChallengeType.")
                     }
                     if (cloudSentence != localCommitmentSentence) {
                         Log.w(TAG, "Cloud commitmentSentence differs from local sentence. Preserving local commitment sentence.")
@@ -67,11 +72,11 @@ class AccountabilitySync @Inject constructor(
                         Log.w(TAG, "Cloud timeDelayHours ($cloudDelayHours) differs from local ($localTimeDelayHours). Enforcing max: $resolvedDelayHours hours.")
                     }
 
-                    prefs.setChallengeType(localChallengeType)
+                    prefs.setChallengeType(resolvedChallengeType)
                     prefs.setCommitmentSentence(localCommitmentSentence)
                     prefs.setTimeDelayHours(resolvedDelayHours)
                     prefs.setChallengeActive(true)
-                    Log.i(TAG, "Restored accountability with local-stronger rule: active=true, type=$localChallengeType, delayHours=$resolvedDelayHours")
+                    Log.i(TAG, "Restored accountability with local-stronger rule: active=true, type=$resolvedChallengeType, delayHours=$resolvedDelayHours")
                 } else {
                     prefs.setChallengeType(cloudChallengeType)
                     prefs.setCommitmentSentence(cloudSentence)

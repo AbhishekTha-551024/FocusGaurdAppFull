@@ -5,20 +5,27 @@
     Events subscribed:
       - typeWindowStateChanged: catches foreground app/activity changes (Settings, installer)
       - typeWindowContentChanged: catches content updates within a window
+      - typeWindowsChanged: required for split-screen / PiP interception
+    typeViewScrolled is intentionally NOT subscribed: no handler branches on scroll events,
+    and they only add delivery volume on top of the content-change stream.
 
     Flags:
       - flagRetrieveInteractiveWindows: needed to inspect window trees
       - flagReportViewIds: fast view ID access
 
-    notificationTimeout="10" (10ms) — ultra-fast event delivery to eliminate multi-tap lag
+    notificationTimeout="70" (70ms) — batches events so the OS stops delivering up to
+    ~100 content-change events per second. Click / long-press interception still lands
+    well under human reaction time. The runtime value is re-applied in
+    FocusGuardAccessibilityService.onServiceConnected() from Timings.A11Y_EVENT_BATCH_WINDOW_MS,
+    so change BOTH places.
 -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeViewLongClicked|typeViewTextChanged|typeViewScrolled|typeWindowsChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeViewLongClicked|typeViewTextChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:description="@string/accessibility_service_description"
-    android:notificationTimeout="10"
+    android:notificationTimeout="70"
     android:settingsActivity=".ui.onboarding.OnboardingActivity" />

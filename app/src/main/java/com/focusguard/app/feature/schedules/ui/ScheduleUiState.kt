@@ -1,6 +1,6 @@
 package com.focusguard.app.feature.schedules.ui
 
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.database.entity.ScheduleEntity
 import com.focusguard.app.core.model.ActiveChallengeState
@@ -17,5 +17,6 @@ data class ScheduleUiState(
     val challengeType: ChallengeType = ChallengeType.TYPING,
     val commitmentSentence: String = "",
     val timeDelayHours: Int = 24,
-    val pendingAccountabilitySchedule: PendingAccountabilitySchedule? = null
+    val pendingAccountabilitySchedule: PendingAccountabilitySchedule? = null,
+    val errorMessage: String? = null
 )

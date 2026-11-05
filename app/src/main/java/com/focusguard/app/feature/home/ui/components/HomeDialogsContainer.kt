@@ -11,7 +11,7 @@ import androidx.compose.runtime.remember
 import com.focusguard.app.capability.Capability
 import com.focusguard.app.capability.CapabilityDetails
 import com.focusguard.app.capability.CapabilityState
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.feature.home.ui.HomeUiState
 import com.focusguard.app.ui.capability.CapabilityExplanationDialog
 import com.focusguard.app.ui.challenge.ChangeChallengeTypeDialog
@@ -21,7 +21,7 @@ import com.focusguard.app.ui.components.AccessibilityDisclosureDialog
 import com.focusguard.app.ui.components.DeviceAdminRequiredDialog
 import com.focusguard.app.ui.components.FeaturePermissionsDialog
 import com.focusguard.app.ui.components.FeedControlWarningDialog
-import com.focusguard.app.ui.components.UninstallProtectionDurationDialog
+import com.focusguard.app.ui.components.UninstallProtectionArmingGate
 import com.focusguard.app.ui.protection.OemProtectionDialog
 import com.focusguard.app.feature.settings.ui.SettingsUiState
 
@@ -162,11 +162,12 @@ fun HomeDialogsContainer(
     }
 
     // ── UNINSTALL PROTECTION DURATION DIALOG ──
+    // Phase B: arming goes through the shared gate — notification rationale + runtime
+    // POST_NOTIFICATIONS request, then a fail-visible warning if both recovery channels
+    // (overlay + notifications) are missing. onArm is only called after the user passes it.
     if (settingsUiState.showUninstallDurationDialog) {
-        UninstallProtectionDurationDialog(
-            onConfirm = { days ->
-                onConfirmEnableUninstallProtection(days)
-            },
+        UninstallProtectionArmingGate(
+            onArm = onConfirmEnableUninstallProtection,
             onDismiss = onDismissUninstallDurationDialog
         )
     }

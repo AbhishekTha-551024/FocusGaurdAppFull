@@ -10,6 +10,7 @@ package com.focusguard.app.service
 class GuardTimestamps {
     @JvmField var lastBlockTimestamp: Long = 0L
     @JvmField var lastShadeCollapseTimestamp: Long = 0L
+    @JvmField var lastSettingsDismissTimestamp: Long = 0L
     @JvmField var lastDeepFocusReassertTimestamp: Long = 0L
     @JvmField var lastOverlayDismissTimestamp: Long = 0L
     @JvmField var lastDismissedPackage: String = ""

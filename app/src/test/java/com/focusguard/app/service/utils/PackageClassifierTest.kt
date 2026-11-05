@@ -69,4 +69,26 @@ class PackageClassifierTest {
             PackageClassifier.isSettingsPackage(ytPkg)
         )
     }
+
+    @Test
+    fun testPhonePeIsNotExemptJustBecauseNameContainsPhone() {
+        // Regression: a broad contains("phone") exemption silently skipped every block,
+        // limit and schedule check for com.phonepe.app.
+        assertFalse(
+            "com.phonepe.app must be blockable",
+            PackageClassifier.isSystemOrLauncherPackage("com.phonepe.app")
+        )
+    }
+
+    @Test
+    fun testDialerStillCountsAsSystemOrLauncher() {
+        assertTrue(
+            "com.android.dialer must stay exempt as the call surface",
+            PackageClassifier.isSystemOrLauncherPackage("com.android.dialer")
+        )
+        assertTrue(
+            "com.google.android.dialer must stay exempt as the call surface",
+            PackageClassifier.isSystemOrLauncherPackage("com.google.android.dialer")
+        )
+    }
 }

@@ -3,15 +3,21 @@ package com.focusguard.app.feature.schedules.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.common.result.AppResult
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.database.entity.ScheduleEntity
 import com.focusguard.app.core.model.ActiveChallengeState
+import com.focusguard.app.core.model.scheduledApplyTimestamp
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.feature.schedules.domain.repository.ScheduleRepository
-import com.focusguard.app.feature.schedules.domain.usecase.*
+import com.focusguard.app.feature.schedules.domain.usecase.ActivateScheduleChallengeUseCase
+import com.focusguard.app.feature.schedules.domain.usecase.GetSchedulesUseCase
+import com.focusguard.app.feature.schedules.domain.usecase.SaveScheduleUseCase
+import com.focusguard.app.feature.schedules.domain.model.isScheduleWindowValid
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -20,8 +26,6 @@ import javax.inject.Inject
 class ScheduleViewModel @Inject constructor(
     private val getSchedulesUseCase: GetSchedulesUseCase,
     private val saveScheduleUseCase: SaveScheduleUseCase,
-    private val deleteScheduleUseCase: DeleteScheduleUseCase,
-    private val toggleScheduleUseCase: ToggleScheduleUseCase,
     private val activateScheduleChallengeUseCase: ActivateScheduleChallengeUseCase,
     private val scheduleRepository: ScheduleRepository,
     private val focusGuardRepository: FocusGuardRepository
@@ -30,19 +34,22 @@ class ScheduleViewModel @Inject constructor(
     private val _isAddDialogOpen = MutableStateFlow(false)
     private val _activeChallenge = MutableStateFlow<ActiveChallengeState?>(null)
     private val _pendingAccountabilitySchedule = MutableStateFlow<PendingAccountabilitySchedule?>(null)
+    private val _errorMessage = MutableStateFlow<String?>(null)
 
     private data class DialogChallengeState(
         val isAddDialogOpen: Boolean,
         val activeChallenge: ActiveChallengeState?,
-        val pendingAccountability: PendingAccountabilitySchedule?
+        val pendingAccountability: PendingAccountabilitySchedule?,
+        val errorMessage: String?
     )
 
     private val dialogChallengeState = combine(
         _isAddDialogOpen,
         _activeChallenge,
-        _pendingAccountabilitySchedule
-    ) { isAddOpen, challenge, pendingSched ->
-        DialogChallengeState(isAddOpen, challenge, pendingSched)
+        _pendingAccountabilitySchedule,
+        _errorMessage
+    ) { isAddOpen, challenge, pendingSched, error ->
+        DialogChallengeState(isAddOpen, challenge, pendingSched, error)
     }
 
     val uiState: StateFlow<ScheduleUiState> = combine(
@@ -67,7 +74,8 @@ class ScheduleViewModel @Inject constructor(
             challengeType = settings.type,
             commitmentSentence = settings.commitmentSentence,
             timeDelayHours = settings.timeDelayHours,
-            pendingAccountabilitySchedule = dialog.pendingAccountability
+            pendingAccountabilitySchedule = dialog.pendingAccountability,
+            errorMessage = dialog.errorMessage
         )
     }.flowOn(Dispatchers.IO)
     .stateIn(
@@ -111,7 +119,9 @@ class ScheduleViewModel @Inject constructor(
         endMinute: Int
     ) {
         val cleanTitle = title.trim()
-        if (cleanTitle.isBlank()) return
+        if (cleanTitle.isBlank() ||
+            !isScheduleWindowValid(daysOfWeekMask, startMinute, endMinute)
+        ) return
 
         val entity = ScheduleEntity(
             title = cleanTitle,
@@ -124,13 +134,16 @@ class ScheduleViewModel @Inject constructor(
         )
 
         if (!uiState.value.isChallengeActive) {
-            _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(entity, isDelete = false, isAdd = true)
+            _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(
+                entity,
+                ScheduleAccountabilityAction.CREATE
+            )
             _isAddDialogOpen.value = false
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            saveScheduleUseCase(entity)
+            recordOperationResult(saveScheduleUseCase(entity))
             _isAddDialogOpen.value = false
         }
     }
@@ -144,20 +157,25 @@ class ScheduleViewModel @Inject constructor(
                 description = "delete schedule '$title'"
             )
         } else {
-            viewModelScope.launch(Dispatchers.IO) {
-                deleteScheduleUseCase(id)
-            }
+            val schedule = uiState.value.schedules.find { it.id == id } ?: return
+            _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(
+                schedule,
+                ScheduleAccountabilityAction.DELETE
+            )
         }
     }
 
     fun toggleSchedule(schedule: ScheduleEntity, isEnabled: Boolean) {
         if (isEnabled) {
             if (!uiState.value.isChallengeActive) {
-                _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(schedule, isDelete = false, isAdd = false)
+                _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(
+                    schedule,
+                    ScheduleAccountabilityAction.ENABLE
+                )
                 return
             }
             viewModelScope.launch(Dispatchers.IO) {
-                saveScheduleUseCase(schedule.copy(isEnabled = true))
+                recordOperationResult(saveScheduleUseCase(schedule.copy(isEnabled = true)))
             }
         } else {
             if (uiState.value.isChallengeActive) {
@@ -168,9 +186,10 @@ class ScheduleViewModel @Inject constructor(
                     description = "disable schedule '${schedule.title}'"
                 )
             } else {
-                viewModelScope.launch(Dispatchers.IO) {
-                    saveScheduleUseCase(schedule.copy(isEnabled = false))
-                }
+                _pendingAccountabilitySchedule.value = PendingAccountabilitySchedule(
+                    schedule,
+                    ScheduleAccountabilityAction.DISABLE
+                )
             }
         }
     }
@@ -178,17 +197,34 @@ class ScheduleViewModel @Inject constructor(
     fun onActivateChallengeForSchedule(newType: ChallengeType, sentence: String) {
         val pending = _pendingAccountabilitySchedule.value ?: return
         viewModelScope.launch {
-            activateScheduleChallengeUseCase(newType, sentence)
+            val activation = activateScheduleChallengeUseCase(newType, sentence)
+            recordOperationResult(activation)
+            when (activation) {
+                is AppResult.Failure -> return@launch
+                is AppResult.Success -> Unit
+            }
             _pendingAccountabilitySchedule.value = null
-            if (pending.isAdd || !pending.isDelete) {
-                saveScheduleUseCase(pending.schedule.copy(isEnabled = true))
-            } else {
-                _activeChallenge.value = ActiveChallengeState(
-                    changeType = ChangeType.DELETE_SCHEDULE,
-                    targetId = pending.schedule.id.toString(),
-                    targetName = pending.schedule.title,
-                    description = "delete schedule '${pending.schedule.title}'"
-                )
+            when (pending.action) {
+                ScheduleAccountabilityAction.CREATE,
+                ScheduleAccountabilityAction.ENABLE -> {
+                    recordOperationResult(saveScheduleUseCase(pending.schedule.copy(isEnabled = true)))
+                }
+                ScheduleAccountabilityAction.DISABLE -> {
+                    _activeChallenge.value = ActiveChallengeState(
+                        changeType = ChangeType.DISABLE_SCHEDULE,
+                        targetId = pending.schedule.id.toString(),
+                        targetName = pending.schedule.title,
+                        description = "disable schedule '${pending.schedule.title}'"
+                    )
+                }
+                ScheduleAccountabilityAction.DELETE -> {
+                    _activeChallenge.value = ActiveChallengeState(
+                        changeType = ChangeType.DELETE_SCHEDULE,
+                        targetId = pending.schedule.id.toString(),
+                        targetName = pending.schedule.title,
+                        description = "delete schedule '${pending.schedule.title}'"
+                    )
+                }
             }
         }
     }
@@ -200,13 +236,22 @@ class ScheduleViewModel @Inject constructor(
     fun onChallengeSuccess(context: Context) {
         val challenge = _activeChallenge.value ?: return
         viewModelScope.launch {
-            val pending = focusGuardRepository.createPendingChange(
-                changeType = challenge.changeType,
-                targetId = challenge.targetId,
-                targetName = challenge.targetName
-            )
-            focusGuardRepository.applyPendingChange(pending)
-            _activeChallenge.value = null
+            try {
+                focusGuardRepository.createPendingChange(
+                    changeType = challenge.changeType,
+                    targetId = challenge.targetId,
+                    targetName = challenge.targetName,
+                    scheduledApplyAt = scheduledApplyTimestamp(
+                        System.currentTimeMillis(),
+                        uiState.value.timeDelayHours
+                    )
+                )
+                _activeChallenge.value = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _errorMessage.value = e.localizedMessage ?: "Could not queue the schedule change."
+            }
         }
     }
 
@@ -216,7 +261,11 @@ class ScheduleViewModel @Inject constructor(
 
     fun cancelPendingChange(id: Long) {
         viewModelScope.launch {
-            scheduleRepository.cancelPendingChange(id)
+            recordOperationResult(scheduleRepository.cancelPendingChange(id))
         }
+    }
+
+    private fun recordOperationResult(result: AppResult<*>) {
+        _errorMessage.value = result.errorOrNull()?.message
     }
 }

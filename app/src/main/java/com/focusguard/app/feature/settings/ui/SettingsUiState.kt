@@ -1,6 +1,6 @@
 package com.focusguard.app.feature.settings.ui
 
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PartnershipEntity
 import com.focusguard.app.core.model.ActiveChallengeState
 import com.focusguard.app.data.repository.ProtectionPermissionStatus
@@ -9,6 +9,7 @@ import com.focusguard.app.data.repository.ProtectionPermissionStatus
  * Immutable UI State for FocusGuard Settings screen.
  */
 data class SettingsUiState(
+    val isInitialSettingsSnapshotLoaded: Boolean = false,
     val challengeType: ChallengeType = ChallengeType.TYPING,
     val commitmentSentence: String = "",
     val timeDelayHours: Int = 24,

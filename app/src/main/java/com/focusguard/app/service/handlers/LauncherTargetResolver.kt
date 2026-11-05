@@ -8,8 +8,17 @@ import com.focusguard.app.BuildConfig
 import com.focusguard.app.utils.SafeNodeUtils
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 
 private const val TAG = "FG:Launcher"
+
+/**
+ * Measured Vivo launcher (V2355) anchoring of a shortcut popup to the icon it belongs to:
+ * popup right edge = icon right edge - 51 px, and the popup sits 16 px above the icon's top
+ * (or 16 px below its bottom when the icon is not in the bottom row).
+ */
+private const val SLOT_BOUNDS_TOLERANCE_PX = 16
+private const val SLOT_SCAN_NODE_LIMIT = 400
 
 enum class LauncherTarget {
     FOCUSGUARD,
@@ -81,6 +90,77 @@ class LauncherTargetResolver @Inject constructor() {
             }
         }
         nodes.forEach { SafeNodeUtils.safeRecycle(it) }
+    }
+
+    /**
+     * Vivo's launcher replaces the held icon with its shortcut popup: the icon's own labelled
+     * node disappears from the accessibility tree (all other icon labels stay), and the popup is
+     * anchored to the vacated slot.
+     *
+     * Returns true only when BOTH measured facts hold for the cached FocusGuard slot:
+     * 1. the popup geometry matches a measured edge of that slot,
+     * 2. no labelled icon occupies the slot any more.
+     * A missing cache or an occupied slot returns false, so OTHER/UNKNOWN stay ignored.
+     */
+    fun isPopupAnchoredToFocusGuard(
+        rootNode: AccessibilityNodeInfo,
+        popupAnchor: AccessibilityNodeInfo
+    ): Boolean {
+        val icon = lastFocusGuardIconBounds ?: return false
+        val popup = Rect()
+        popupAnchor.getBoundsInScreen(popup)
+        if (popup.width() <= 0 || popup.height() <= 0) return false
+
+        if (!LauncherPopupAnchorPolicy.matches(
+                popupLeft = popup.left,
+                popupTop = popup.top,
+                popupRight = popup.right,
+                popupBottom = popup.bottom,
+                iconLeft = icon.left,
+                iconTop = icon.top,
+                iconRight = icon.right,
+                iconBottom = icon.bottom
+            )) {
+            return false
+        }
+
+        val slotOccupied = isIconLabelOccupying(rootNode, icon)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "Popup anchor check: popup=$popup icon=$icon slotOccupied=$slotOccupied")
+        }
+        return !slotOccupied
+    }
+
+    /**
+     * True when a labelled node still occupies [slot]. The launcher removes the held icon's
+     * node, so an occupied slot proves the open popup belongs to a different app.
+     */
+    private fun isIconLabelOccupying(rootNode: AccessibilityNodeInfo, slot: Rect): Boolean {
+        val pending = ArrayDeque<AccessibilityNodeInfo>()
+        pending.addLast(rootNode)
+        var visited = 0
+        while (pending.isNotEmpty()) {
+            if (visited >= SLOT_SCAN_NODE_LIMIT) return true
+            val node = pending.removeLast()
+            visited++
+            if (!node.text.isNullOrBlank() || !node.contentDescription.isNullOrBlank()) {
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                if (boundsMatchesSlot(bounds, slot)) return true
+            }
+            for (i in 0 until node.childCount) {
+                val child = try { node.getChild(i) } catch (_: Exception) { null }
+                if (child != null) pending.addLast(child)
+            }
+        }
+        return false
+    }
+
+    private fun boundsMatchesSlot(bounds: Rect, slot: Rect): Boolean {
+        return abs(bounds.left - slot.left) <= SLOT_BOUNDS_TOLERANCE_PX &&
+                abs(bounds.top - slot.top) <= SLOT_BOUNDS_TOLERANCE_PX &&
+                abs(bounds.right - slot.right) <= SLOT_BOUNDS_TOLERANCE_PX &&
+                abs(bounds.bottom - slot.bottom) <= SLOT_BOUNDS_TOLERANCE_PX
     }
 
     fun resolve(
@@ -211,4 +291,3 @@ class LauncherTargetResolver @Inject constructor() {
         return sb.toString()
     }
 }
-

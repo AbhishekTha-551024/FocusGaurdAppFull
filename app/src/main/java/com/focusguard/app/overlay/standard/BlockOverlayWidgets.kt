@@ -21,10 +21,18 @@
 package com.focusguard.app.overlay.standard
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -121,6 +129,47 @@ internal fun CountdownRing(
                 letterSpacing = 2.sp
             )
         }
+    }
+}
+
+@Composable
+internal fun BlockExitButton(
+    enabled: Boolean,
+    label: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = { if (enabled) onClick() },
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (enabled) accentColor else accentColor.copy(alpha = 0.18f),
+            disabledContainerColor = Color.White.copy(alpha = 0.08f),
+            contentColor = Color.White,
+            disabledContentColor = White40
+        ),
+        border = BorderStroke(
+            width = 1.5.dp,
+            color = if (enabled) accentColor else Color.White.copy(alpha = 0.2f)
+        ),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth(0.75f)
+            .height(50.dp)
+    ) {
+        Icon(
+            imageVector = if (enabled) Icons.Default.CheckCircle else Icons.Default.Lock,
+            contentDescription = null,
+            tint = if (enabled) Color.White else White40,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = label,
+            color = if (enabled) Color.White else White40,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp
+        )
     }
 }
 

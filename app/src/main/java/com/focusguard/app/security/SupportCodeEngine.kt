@@ -174,13 +174,15 @@ class SupportCodeEngine @Inject constructor() {
         add(
             Candidate(
                 ACTION_DISABLE_UNINSTALL, "Disable Uninstall Protection", "",
-                "Turn off Device Admin and allow FocusGuard modifications or uninstallation"
+                "Turn off local Uninstall Protection and request Device Admin removal. " +
+                    "A mirrored timed commitment may return after reinstall."
             )
         )
         add(
             Candidate(
                 ACTION_RESET_CHALLENGE, "Reset Challenge Lock", "",
-                "Reset active Sentence Typing or 24-hour time delay challenges"
+                "Turn off the accountability challenge and clear pending changes. " +
+                    "Uninstall Protection is unaffected."
             )
         )
         add(
@@ -192,7 +194,8 @@ class SupportCodeEngine @Inject constructor() {
         add(
             Candidate(
                 ACTION_FULL_RESET, "Master Emergency Reset", "",
-                "Disable all protections, unblock all apps, and clear all restrictions"
+                "Reset local restrictions and disable local Uninstall Protection. " +
+                    "A mirrored timed commitment may return after reinstall."
             )
         )
         PRESET_FEEDS.forEach { feed ->

@@ -2,7 +2,6 @@ package com.focusguard.app.core.database.dao
 
 import androidx.room.*
 import com.focusguard.app.core.database.entity.MindfulAppEntity
-import com.focusguard.app.core.database.entity.MindfulIntentLogEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -27,21 +26,4 @@ interface MindfulDao {
 
     @Query("SELECT EXISTS(SELECT 1 FROM mindful_apps WHERE packageName = :packageName)")
     suspend fun isAppMindful(packageName: String): Boolean
-
-    // ── Intent Logs & Victory Analytics ──────────────────────────────────────
-
-    @Insert
-    suspend fun insertIntentLog(log: MindfulIntentLogEntity)
-
-    @Query("SELECT * FROM mindful_intent_logs ORDER BY timestamp DESC LIMIT :limit")
-    fun getRecentLogs(limit: Int = 50): Flow<List<MindfulIntentLogEntity>>
-
-    @Query("SELECT COUNT(*) FROM mindful_intent_logs WHERE wasWalkedAway = 1 AND timestamp >= :startOfDay")
-    fun getTodayWalkedAwayCount(startOfDay: Long): Flow<Int>
-
-    @Query("SELECT COUNT(*) FROM mindful_intent_logs WHERE wasWalkedAway = 0 AND timestamp >= :startOfDay")
-    fun getTodayConsciousOpensCount(startOfDay: Long): Flow<Int>
-
-    @Query("DELETE FROM mindful_intent_logs WHERE timestamp < :beforeTimestamp")
-    suspend fun clearOldLogs(beforeTimestamp: Long)
 }

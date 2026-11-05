@@ -5,11 +5,12 @@ import com.focusguard.app.core.common.result.AppResult
 import com.focusguard.app.core.database.dao.BlockedKeywordDao
 import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.entity.BlockedKeywordEntity
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
+import com.focusguard.app.core.startup.CeStorageGate
 import com.focusguard.app.feature.keywordblocker.data.mapper.toDomain
 import com.focusguard.app.feature.keywordblocker.domain.model.BlockedKeyword
 import com.focusguard.app.feature.keywordblocker.domain.repository.KeywordBlockerRepository
@@ -29,6 +30,7 @@ class KeywordBlockerRepositoryImpl @Inject constructor(
     private val blockedKeywordDao: BlockedKeywordDao,
     private val pendingChangeDao: PendingChangeDao,
     private val prefs: FocusGuardPreferences,
+    private val ceStorageGate: CeStorageGate,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : KeywordBlockerRepository {
 
@@ -38,6 +40,7 @@ class KeywordBlockerRepositoryImpl @Inject constructor(
 
     init {
         repoScope.launch {
+            ceStorageGate.awaitUnlocked()
             try {
                 blockedKeywordDao.watchBlockedKeywords().collect { list ->
                     val cleanList = mutableListOf<String>()

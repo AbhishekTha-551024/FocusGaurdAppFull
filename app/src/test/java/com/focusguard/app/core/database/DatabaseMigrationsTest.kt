@@ -15,7 +15,7 @@ class DatabaseMigrationsTest {
     @Test
     fun testAllMigrationsCountAndVersions() {
         val migrations = DatabaseMigrations.ALL_MIGRATIONS
-        assertEquals(6, migrations.size)
+        assertEquals(7, migrations.size)
         assertEquals(1, migrations[0].startVersion)
         assertEquals(2, migrations[0].endVersion)
         assertEquals(2, migrations[1].startVersion)
@@ -28,6 +28,8 @@ class DatabaseMigrationsTest {
         assertEquals(6, migrations[4].endVersion)
         assertEquals(6, migrations[5].startVersion)
         assertEquals(7, migrations[5].endVersion)
+        assertEquals(7, migrations[6].startVersion)
+        assertEquals(8, migrations[6].endVersion)
     }
 
     @Test
@@ -56,6 +58,7 @@ class DatabaseMigrationsTest {
         assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS `pending_changes`") })
         assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS `partnerships`") })
         assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS `mindful_apps`") })
+        assertTrue(executedSql.any { it == "DROP TABLE IF EXISTS `mindful_intent_logs`" })
         assertTrue(executedSql.any { it.contains("ALTER TABLE `blocked_apps` ADD COLUMN") })
     }
 }

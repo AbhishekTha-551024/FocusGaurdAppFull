@@ -1,0 +1,14 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bench</title>
+<body style="height:20000px;font-size:28px">
+<div id="a">0</div><div id="b">0</div>
+<script>
+let n = 0;
+setInterval(() => {
+  n++;
+  document.getElementById('a').textContent = 'tick ' + n;
+  document.getElementById('b').textContent = 'value ' + ((n * 7) % 1000);
+}, 20);
+</script>
+</body>

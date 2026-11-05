@@ -1,7 +1,7 @@
 package com.focusguard.app.feature.mindful.domain.usecase
 
 import com.focusguard.app.core.common.result.AppResult
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.feature.mindful.domain.repository.MindfulAppsRepository
 import javax.inject.Inject
 

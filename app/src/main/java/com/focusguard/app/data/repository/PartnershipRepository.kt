@@ -25,7 +25,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 import com.focusguard.app.core.datastore.FocusGuardPreferences
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 
 private const val TAG = "PartnershipRepo"
 private const val COLLECTION_PARTNERSHIPS = "partnerships"
@@ -46,7 +46,8 @@ class PartnershipRepository @Inject constructor(
     private val _currentUser = MutableStateFlow<FirebaseUser?>(auth.currentUser)
     val currentUser = _currentUser.asStateFlow()
 
-    private val isPartnerActiveCache = AtomicBoolean(false)
+    private val isOwnerPartnershipActiveCache = AtomicBoolean(false)
+    private val isPartnerPartnershipActiveCache = AtomicBoolean(false)
 
     private var ownerListener: ListenerRegistration? = null
     private var partnerListener: ListenerRegistration? = null
@@ -61,7 +62,8 @@ class PartnershipRepository @Inject constructor(
             } else {
                 stopPartnershipSync()
                 scope.launch { dao.clearAll() }
-                isPartnerActiveCache.set(false)
+                isOwnerPartnershipActiveCache.set(false)
+                isPartnerPartnershipActiveCache.set(false)
             }
         }
     }
@@ -71,13 +73,15 @@ class PartnershipRepository @Inject constructor(
     fun observePartnershipForUser(userId: String, email: String): Flow<PartnershipEntity?> =
         dao.observeCurrentPartnership(userId, email)
 
-    fun isFastPartnershipActive(): Boolean = isPartnerActiveCache.get()
+    fun isFastPartnershipActive(): Boolean =
+        isOwnerPartnershipActiveCache.get() || isPartnerPartnershipActiveCache.get()
 
     internal fun clearPartnershipSession() {
         _currentUser.value = null
         stopPartnershipSync()
         scope.launch { dao.clearAll() }
-        isPartnerActiveCache.set(false)
+        isOwnerPartnershipActiveCache.set(false)
+        isPartnerPartnershipActiveCache.set(false)
     }
 
     suspend fun sendInvite(partnerEmail: String): Result<String> {
@@ -177,7 +181,7 @@ class PartnershipRepository @Inject constructor(
                 firestore.collection(COLLECTION_PARTNERSHIPS).document(partnershipId)
                     .update("status", PartnershipStatus.REVOKED.name).await()
                 dao.deleteById(partnershipId)
-                isPartnerActiveCache.set(false)
+                isOwnerPartnershipActiveCache.set(false)
                 if (prefs.syncChallengeType == ChallengeType.PARTNER) {
                     prefs.setChallengeType(ChallengeType.TYPING)
                 }
@@ -216,13 +220,13 @@ class PartnershipRepository @Inject constructor(
                         createdAt = doc.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis()
                     )
                     scope.launch { dao.insertOrUpdate(entity) }
-                    isPartnerActiveCache.set(status == PartnershipStatus.ACTIVE)
+                    isOwnerPartnershipActiveCache.set(status == PartnershipStatus.ACTIVE)
                 } ?: run {
                     scope.launch {
                         val active = dao.getActivePartnershipSync()
                         if (active?.ownerUserId == userId) {
                             dao.deleteById(active.partnershipId)
-                            isPartnerActiveCache.set(false)
+                            isOwnerPartnershipActiveCache.set(false)
                             if (prefs.syncChallengeType == ChallengeType.PARTNER) {
                                 prefs.setChallengeType(ChallengeType.TYPING)
                             }
@@ -252,9 +256,9 @@ class PartnershipRepository @Inject constructor(
                         createdAt = doc.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis()
                     )
                     scope.launch { dao.insertOrUpdate(entity) }
-                    if (status == PartnershipStatus.ACTIVE) {
-                        isPartnerActiveCache.set(true)
-                    }
+                    isPartnerPartnershipActiveCache.set(status == PartnershipStatus.ACTIVE)
+                } ?: run {
+                    isPartnerPartnershipActiveCache.set(false)
                 }
             }
     }

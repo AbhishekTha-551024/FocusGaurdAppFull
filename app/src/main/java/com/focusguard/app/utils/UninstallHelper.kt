@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
+import com.focusguard.app.recovery.UninstallTeardownGuard
 import com.focusguard.app.service.FocusGuardAccessibilityService
 
 private const val TAG = "UninstallHelper"
@@ -25,11 +26,19 @@ private const val TAG = "UninstallHelper"
  * 1. Deactivates Device Admin via [DevicePolicyManager.removeActiveAdmin].
  * 2. Disables FocusGuard's Accessibility Service via [AccessibilityService.disableSelf].
  * 3. Launches Android's native uninstaller confirmation dialog via [Intent.ACTION_DELETE].
+ *
+ * Steps 1 and 2 are irreversible from inside the app, and the uninstaller gives no result, so
+ * [com.focusguard.app.recovery.UninstallTeardownGuard] watches whether this process survives the
+ * prompt: a cancelled uninstall re-asserts exactly the privileges this method gave up.
  */
 object UninstallHelper {
 
     fun performCleanUninstall(context: Context) {
         Log.i(TAG, "Starting clean uninstall sequence for FocusGuard...")
+
+        // Safety net for callers that did not arm earlier: whatever protection is still readable here
+        // is exactly what the two steps below destroy, so it is what a cancelled uninstall puts back.
+        UninstallTeardownGuard.armBeforeTeardown(context)
 
         // Step 1: Remove Device Admin privileges (clears OS-level uninstall block)
         try {
@@ -70,5 +79,9 @@ object UninstallHelper {
                 Log.e(TAG, "Failed to open application details settings: ${ex.message}", ex)
             }
         }
+
+        // Neither the uninstaller nor the details screen returns a result, so the only evidence
+        // available to this app is whether it is still installed afterwards.
+        UninstallTeardownGuard.scheduleCancelCheck(context)
     }
 }

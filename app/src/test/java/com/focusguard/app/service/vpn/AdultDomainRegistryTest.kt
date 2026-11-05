@@ -15,23 +15,37 @@ class AdultDomainRegistryTest {
     }
 
     @Test
-    fun testAdultDomainRegistryBlocksRegisteredAndSubdomainsAndAllowsBenign() {
-        // 1. Registered domain is blocked
-        assertTrue("pornhub.com must be blocked", registry.isAdultDomain("pornhub.com"))
-        assertTrue("xvideos.com must be blocked", registry.isAdultDomain("xvideos.com"))
+    fun testExactDomainIsBlocked() {
+        assertTrue(registry.isAdultDomain("pornhub.com"))
+    }
 
-        // 2. Subdomains of registered domains are blocked
-        assertTrue("sub.pornhub.com must be blocked", registry.isAdultDomain("sub.pornhub.com"))
-        assertTrue("mobile.video.xvideos.com must be blocked", registry.isAdultDomain("mobile.video.xvideos.com"))
+    @Test
+    fun testSubdomainIsBlocked() {
+        assertTrue(registry.isAdultDomain("www.pornhub.com"))
+        assertTrue(registry.isAdultDomain("m.pornhub.com"))
+    }
 
-        // 3. Adult TLDs are blocked
-        assertTrue("anything.xxx must be blocked", registry.isAdultDomain("anything.xxx"))
-        assertTrue("deep.subdomain.porn must be blocked", registry.isAdultDomain("deep.subdomain.porn"))
+    @Test
+    fun testTrailingDotIsIgnored() {
+        assertTrue(registry.isAdultDomain("pornhub.com."))
+    }
 
-        // 4. Benign domain is allowed
-        assertFalse("example.com must be allowed", registry.isAdultDomain("example.com"))
-        assertFalse("sub.example.com must be allowed", registry.isAdultDomain("sub.example.com"))
-        assertFalse("google.com must be allowed", registry.isAdultDomain("google.com"))
+    @Test
+    fun testAdultTldIsBlocked() {
+        assertTrue(registry.isAdultDomain("anything.xxx"))
+        assertTrue(registry.isAdultDomain("anything.porn"))
+    }
+
+    @Test
+    fun testLookalikeDomainIsNotBlocked() {
+        // Must match on label boundary, not raw substring.
+        assertFalse(registry.isAdultDomain("notpornhub.com"))
+        assertFalse(registry.isAdultDomain("pornhub.com.evil.test"))
+    }
+
+    @Test
+    fun testSafeDomainIsNotBlocked() {
+        assertFalse(registry.isAdultDomain("google.com"))
+        assertFalse(registry.isAdultDomain("wikipedia.org"))
     }
 }
-

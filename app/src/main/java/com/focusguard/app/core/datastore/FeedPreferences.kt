@@ -11,7 +11,7 @@ class FeedPreferences @Inject constructor(
     private val core: PreferencesCore
 ) {
     private val dataStore = core.dataStore
-    private val syncPrefs = core.syncPrefs
+    private val syncPrefs get() = core.syncPrefs
 
     val isShortsReelsBlockEnabled: Flow<Boolean> = dataStore.data.map {
         it[PreferenceKeys.SHORTS_REELS_BLOCK_ENABLED] ?: false

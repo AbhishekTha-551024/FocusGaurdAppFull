@@ -23,7 +23,7 @@ class OnboardingPreferences @Inject constructor(
     private val core: PreferencesCore
 ) {
     private val dataStore = core.dataStore
-    private val syncPrefs = core.syncPrefs
+    private val syncPrefs get() = core.syncPrefs
     private val context = core.context
     private val prefScope = core.prefScope
 

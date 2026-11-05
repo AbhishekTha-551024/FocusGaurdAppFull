@@ -1,23 +1,29 @@
 package com.focusguard.app.core.datastore
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val HYDRATION_RETRY_DELAY_MS = 5_000L
+private const val MAX_HYDRATION_FAILURES = 5
 
 val Context.focusGuardDataStore: DataStore<Preferences>
         by preferencesDataStore(name = "focusguard_prefs")
@@ -84,8 +90,13 @@ typealias SettingsSnapshot = FocusGuardPreferences.SettingsSnapshot
 class PreferencesCore @Inject constructor(
     @ApplicationContext val context: Context
 ) {
-    val dataStore: DataStore<Preferences> = context.focusGuardDataStore
-    val syncPrefs = context.getSharedPreferences("focusguard_sync_cache", Context.MODE_PRIVATE)
+    // Lazy: resolving the DataStore file touches CE storage, which throws before the first user
+    // unlock after a reboot and would kill the process during Hilt graph construction.
+    val dataStore: DataStore<Preferences> by lazy { context.focusGuardDataStore }
+
+    /** Fast-read cache: CE snapshot once unlocked, DE mirror during the direct-boot window. */
+    val syncPrefs: SharedPreferences
+        get() = DirectBootStorage.readCache(context)
 
     private val prefExceptionHandler = CoroutineExceptionHandler { _, throwable ->
         android.util.Log.e("PreferencesCore", "Pref error safely intercepted: ${throwable.message}", throwable)
@@ -93,11 +104,41 @@ class PreferencesCore @Inject constructor(
     val prefScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + prefExceptionHandler)
 
     init {
-        // Eagerly hydrate syncPrefs from DataStore to ensure 0ms reads on Frame 1
+        hydrateSyncCaches()
+    }
+
+    /**
+     * Eagerly hydrates [syncPrefs] from DataStore to ensure 0ms reads on Frame 1.
+     *
+     * A process started at direct boot cannot read the DataStore file or write the CE snapshot, so
+     * this waits for the first user unlock instead of throwing; real failures retry a bounded number
+     * of times. Without the wait, a process born before unlock would never build its caches.
+     */
+    fun hydrateSyncCaches() {
         prefScope.launch {
-            try {
-                dataStore.data.collect { prefs ->
-                    val editor = syncPrefs.edit()
+            var failures = 0
+            while (isActive && failures < MAX_HYDRATION_FAILURES) {
+                if (!DirectBootStorage.isUserUnlocked(context)) {
+                    delay(HYDRATION_RETRY_DELAY_MS)
+                    continue
+                }
+                try {
+                    dataStore.data.collect { prefs -> writeSnapshot(prefs) }
+                    failures = MAX_HYDRATION_FAILURES
+                } catch (e: Exception) {
+                    failures++
+                    android.util.Log.w(
+                        "PreferencesCore",
+                        "Sync cache hydration attempt $failures failed: ${e.message}"
+                    )
+                    delay(HYDRATION_RETRY_DELAY_MS)
+                }
+            }
+        }
+    }
+
+    private fun writeSnapshot(prefs: Preferences) {
+        val editor = (DirectBootStorage.ceCacheOrNull(context) ?: return).edit()
                     prefs[PreferenceKeys.CHALLENGE_TYPE]?.let { editor.putString("challenge_type", it) }
                     prefs[PreferenceKeys.COMMITMENT_SENTENCE]?.let {
                         val valid = if (it.trim().length >= 500) it.trim() else DEFAULT_COMMITMENT_SENTENCE
@@ -111,8 +152,7 @@ class PreferencesCore @Inject constructor(
 
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
                         try {
-                            val deContext = context.createDeviceProtectedStorageContext()
-                            val deEditor = deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE).edit()
+                            val deEditor = DirectBootStorage.deCache(context).edit()
                             prefs[PreferenceKeys.UNINSTALL_PROTECTION_ENABLED]?.let { deEditor.putBoolean("uninstall_protection_enabled", it) }
                             prefs[PreferenceKeys.UNINSTALL_PROTECTION_EXPIRY_TIMESTAMP]?.let { deEditor.putLong("uninstall_protection_expiry_timestamp", it) }
                             prefs[PreferenceKeys.UNINSTALL_PROTECTION_DAYS]?.let { deEditor.putInt("uninstall_protection_days", it) }
@@ -152,10 +192,6 @@ class PreferencesCore @Inject constructor(
                     prefs[PreferenceKeys.TOTAL_FOCUS_SESSIONS_COMPLETED]?.let { editor.putInt("total_focus_sessions_completed", it) }
                     prefs[PreferenceKeys.TOTAL_FOCUS_MINUTES_COMPLETED]?.let { editor.putLong("total_focus_minutes_completed", it) }
                     editor.apply()
-                }
-            } catch (_: Exception) {
-            }
-        }
     }
 
     val settingsSnapshot: Flow<SettingsSnapshot> = dataStore.data.map { prefs ->

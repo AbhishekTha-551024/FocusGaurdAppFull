@@ -1,5 +1,7 @@
 ﻿package com.focusguard.app.capability
 
+import com.focusguard.app.domain.model.ProtectionState
+
 /**
  * Android system capabilities and special access permissions required by FocusGuard features.
  * Modeled as capabilities rather than raw runtime permissions to properly represent
@@ -74,13 +76,19 @@ data class ProtectionHealthSummary(
     val neededCount: Int = 0,
     val notNeededCount: Int = 0,
     val isCoreProtectionActive: Boolean = false,
+    val protectionState: ProtectionState = ProtectionState.UNINITIALIZED,
     val items: List<CapabilityDetails> = emptyList()
 ) {
     val statusHeadline: String
-        get() = when {
-            isCoreProtectionActive && neededCount == 0 -> "Protection Active & Ready"
-            isCoreProtectionActive && neededCount > 0 -> "Active (${neededCount} feature optional)"
-            neededCount > 0 -> "${neededCount} Setup Recommended"
-            else -> "Ready to Configure"
+        get() = when (protectionState) {
+            ProtectionState.UNINITIALIZED -> "Complete setup"
+            ProtectionState.PROTECTED -> when {
+                neededCount == 0 -> "Protection Active & Ready"
+                else -> "Active (${neededCount} feature optional)"
+            }
+            ProtectionState.DEGRADED -> "Protection Partly Available"
+            ProtectionState.RECOVERING -> "Accessibility Service Connecting"
+            ProtectionState.RECOVERY_REQUIRED -> "Protection Requires Attention"
+            ProtectionState.DISABLED -> "Protection Not Configured"
         }
 }

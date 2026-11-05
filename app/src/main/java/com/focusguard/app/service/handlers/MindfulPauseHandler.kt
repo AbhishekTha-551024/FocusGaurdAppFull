@@ -73,8 +73,8 @@ class MindfulPauseHandler @Inject constructor(
             isReturning = stats.isReturning,
             minutesSinceLastSession = stats.displayMinutes,
             todayOpenCount = stats.todayCount,
-            onAllowanceGranted = { durationMinutes, intentText, category ->
-                mindfulRepository.grantAllowance(pkg, appLabel, durationMinutes, intentText, category)
+            onAllowanceGranted = { durationMinutes, _, _ ->
+                mindfulRepository.grantAllowance(pkg, durationMinutes)
                 mindfulRepository.recordSessionStarted(pkg)
                 scheduleAllowanceExpiry(
                     pkg = pkg,
@@ -86,7 +86,6 @@ class MindfulPauseHandler @Inject constructor(
                 )
             },
             onWalkAway = {
-                mindfulRepository.recordWalkedAway(pkg, appLabel)
                 mindfulRepository.recordSessionEnded(pkg)
                 onForceClose(pkg)
             }

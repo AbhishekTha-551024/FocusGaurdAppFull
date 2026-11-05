@@ -9,11 +9,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.designsystem.theme.*
 import com.focusguard.app.core.model.AuthUser
 import com.focusguard.app.feature.settings.ui.components.*
@@ -98,11 +97,7 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Forest950, Forest900, Forest950)
-                        )
-                    )
+                    .focusPageBackground()
                     .verticalScroll(rememberScrollState())
                     .padding(paddingValues)
                     .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -120,7 +115,6 @@ fun SettingsScreen(
 
                 // Emergency Recovery & Support
                 EmergencySupportSection(
-                    deviceId = uiState.deviceId,
                     onOpenSupportCodeDialog = onOpenSupportCodeDialog
                 )
 

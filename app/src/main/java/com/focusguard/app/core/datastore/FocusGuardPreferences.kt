@@ -1,11 +1,17 @@
 package com.focusguard.app.core.datastore
 
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AuthUser
+import com.focusguard.app.domain.model.CommitmentLockState
+import com.focusguard.app.domain.repository.LocalCommitmentStore
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Facade over the split preference files. It also *is* the [LocalCommitmentStore] the restore engine
+ * talks to, so that port needs no second implementation and no delegating helper of its own.
+ */
 @Singleton
 class FocusGuardPreferences @Inject constructor(
     private val core: PreferencesCore,
@@ -14,7 +20,7 @@ class FocusGuardPreferences @Inject constructor(
     private val overlay: OverlayPreferences,
     private val onboarding: OnboardingPreferences,
     private val session: SessionPreferences
-) {
+) : LocalCommitmentStore {
     data class SettingsSnapshot(
         val challengeType: ChallengeType = ChallengeType.TYPING,
         val commitmentSentence: String = DEFAULT_COMMITMENT_SENTENCE,
@@ -51,6 +57,8 @@ class FocusGuardPreferences @Inject constructor(
     val isUninstallProtectionEnabled: Flow<Boolean> get() = protection.isUninstallProtectionEnabled
     val uninstallProtectionExpiryTimestamp: Flow<Long> get() = protection.uninstallProtectionExpiryTimestamp
     val uninstallProtectionDays: Flow<Int> get() = protection.uninstallProtectionDays
+    override fun timedLockState(deviceId: String): Flow<CommitmentLockState> =
+        protection.timedLockState(deviceId)
     val isShortsReelsBlockEnabled: Flow<Boolean> get() = feed.isShortsReelsBlockEnabled
     val isInstagramReelsBlockEnabled: Flow<Boolean> get() = feed.isInstagramReelsBlockEnabled
     val isFacebookReelsBlockEnabled: Flow<Boolean> get() = feed.isFacebookReelsBlockEnabled
@@ -110,6 +118,7 @@ class FocusGuardPreferences @Inject constructor(
     // ── Synchronous Methods ──
     fun isTimedUninstallProtectionActive(): Boolean = protection.isTimedUninstallProtectionActive()
     fun getTimedUninstallProtectionRemainingDays(): Long = protection.getTimedUninstallProtectionRemainingDays()
+    override fun localCommitmentState(deviceId: String): CommitmentLockState = protection.localCommitmentState(deviceId)
     fun updateSyncCounts(apps: Int? = null, keywords: Int? = null, limits: Int? = null, schedules: Int? = null) = onboarding.updateSyncCounts(apps, keywords, limits, schedules)
     fun getTodayDateString(): String = core.getTodayDateString()
     fun getOrCreateDeviceId(): String = onboarding.getOrCreateDeviceId()
@@ -133,6 +142,8 @@ class FocusGuardPreferences @Inject constructor(
     suspend fun setOverlayDimAlpha(alpha: Float) = overlay.setOverlayDimAlpha(alpha)
     suspend fun clearOverlayWallpaper() = overlay.clearOverlayWallpaper()
     suspend fun startTimedUninstallProtection(days: Int) = protection.startTimedUninstallProtection(days)
+    override suspend fun reArmRestoredTimedProtection(days: Int, expiryWallMs: Long, repinUptimeAnchor: Boolean) =
+        protection.reArmRestoredTimedProtection(days, expiryWallMs, repinUptimeAnchor)
     suspend fun setUninstallProtectionEnabled(enabled: Boolean) = protection.setUninstallProtectionEnabled(enabled)
     suspend fun disableUninstallProtection() = protection.disableUninstallProtection()
     suspend fun setShortsReelsBlockEnabled(enabled: Boolean) = feed.setShortsReelsBlockEnabled(enabled)

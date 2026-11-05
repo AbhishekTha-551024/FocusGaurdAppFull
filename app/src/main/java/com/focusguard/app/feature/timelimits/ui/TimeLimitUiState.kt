@@ -1,6 +1,6 @@
 package com.focusguard.app.feature.timelimits.ui
 
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.model.ActiveChallengeState
 
@@ -41,5 +41,6 @@ data class TimeLimitUiState(
     val challengeType: ChallengeType = ChallengeType.TYPING,
     val commitmentSentence: String = "",
     val timeDelayHours: Int = 24,
-    val pendingAccountabilityLimit: PendingAccountabilityLimit? = null
+    val pendingAccountabilityLimit: PendingAccountabilityLimit? = null,
+    val errorMessage: String? = null
 )

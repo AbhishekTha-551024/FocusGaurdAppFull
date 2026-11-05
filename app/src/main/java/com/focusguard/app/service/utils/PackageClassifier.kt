@@ -65,7 +65,10 @@ object PackageClassifier {
                 lower.contains("incallui") ||
                 lower.contains("telecom") ||
                 lower.contains("telephony") ||
-                lower.contains("phone") ||
+                // Exact telephony package only. A broad contains("phone") silently exempted
+                // unrelated apps whose package happens to contain "phone" (e.g. com.phonepe.app)
+                // from every block, limit and schedule check.
+                lower == "com.android.phone" ||
                 lower.contains("truecaller") ||
                 lower == "com.callapp.contacts" ||
                 lower == "com.eycon.android" ||

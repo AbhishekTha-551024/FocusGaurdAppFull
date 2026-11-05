@@ -3,9 +3,12 @@ package com.focusguard.app.service.handlers
 import android.accessibilityservice.AccessibilityService
 import android.os.SystemClock
 import android.util.Log
+import com.focusguard.app.core.common.constants.Timings
 import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.overlay.manager.OverlayBlockType
+import com.focusguard.app.service.utils.TamperResponse
+import com.focusguard.app.service.utils.TamperResponsePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -14,8 +17,9 @@ import javax.inject.Singleton
 /**
  * Handles security tamper interceptions (settings tamper, uninstaller protection, cloner bypass).
  *
- * Coordinates OEM security scan suppression, friction HUD Toast, navigation actions (BACK then HOME),
- * fallback home intent dispatch, delayed block overlay presentation (150ms), and tamper audit logging.
+ * Selects the response with [TamperResponsePolicy], then executes it: friction HUD Toast,
+ * navigation actions (BACK then HOME), fallback home intent dispatch, delayed block overlay
+ * presentation (150ms), the tapjacking-safe heal-and-cover contest, and tamper audit logging.
  *
  * Stateless @Singleton: does not store any Handler, Runnable, Context, or lambda in fields.
  */
@@ -43,8 +47,10 @@ class TamperResponseHandler @Inject constructor(
         onUpdateLastBlockTimestamp: (Long) -> Unit,
         triggerBlockHaptic: () -> Unit,
         showHudToast: (String) -> Unit,
-        performGlobalAction: (Int) -> Boolean,
+        sendGlobalAction: (Int) -> Boolean,
         launchHomeIntent: () -> Unit,
+        onHealAccessibilityInPlace: () -> Boolean,
+        onShowRecoveryCover: () -> Unit,
         postDelayed: (delayMs: Long, action: () -> Unit) -> Unit,
         onTriggerBlockWithHomeAlreadySent: (
             sourcePackage: String,
@@ -57,14 +63,19 @@ class TamperResponseHandler @Inject constructor(
     ) {
         // ── OEM SCAN SUPPRESSION GUARD ────────────────────────────────
         // Vivo iManager temporarily clears ENABLED_ACCESSIBILITY_SERVICES during
-        // its security scan (2-5 s). During this window, ANY Settings/iManager event
-        // we receive is from the OEM scanner -- not a real user tamper attempt.
-        // Calling performGlobalAction(HOME) here during the scan triggers Vivo’s
-        // anti-tapjacking watchdog, which force-unbinds us. Skip the block entirely.
-        // CRITICAL EXEMPTION: Device Admin, Uninstall, and Settings tamper must NEVER be suppressed!
-        val isExemptFromSuppression = isExemptFromSuppression(targetName, blockType, reason)
+        // its security scan (2-5 s). Calling performGlobalAction(HOME) inside that window triggers
+        // Vivo's anti-tapjacking watchdog, which force-unbinds us. The scan window therefore
+        // changes HOW we respond — never WHETHER an attempt on our own accessibility service is
+        // noticed: blanking the setting is itself triggered by the user entering Settings, so
+        // suppressing the attempt used to hand over the exact window in which the toggle flips.
+        // See TamperResponsePolicy for the full decision table.
+        val response = TamperResponsePolicy.decide(
+            isOemScanWindowActive = isOemScanWindowActive(),
+            isExemptFromSuppression = isExemptFromSuppression(targetName, blockType, reason),
+            isSelfA11yProtection = TamperResponsePolicy.isSelfA11yProtectionTamper(targetName, blockType)
+        )
 
-        if (isOemScanWindowActive() && !isExemptFromSuppression) {
+        if (response == TamperResponse.SILENT) {
             Log.i(TAG, "handleSecurityTamper SUPPRESSED during OEM security scan window [$targetName] pkg=$sourcePackage")
             return
         }
@@ -78,11 +89,20 @@ class TamperResponseHandler @Inject constructor(
         // 1. Post a clean native HUD Toast explaining the protection
         showHudToast(message)
 
+        if (response == TamperResponse.HEAL_AND_COVER) {
+            contestWithoutNavigating(sourcePackage, targetName, onHealAccessibilityInPlace, onShowRecoveryCover)
+            logTamper(scope, targetName, sourcePackage, reason)
+            return
+        }
+
         // 2. First pop the dangerous settings page off the back stack
-        performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        sendGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
         // 3. Return to Home screen immediately in < 2ms to exit dangerous settings/installer page.
-        performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+        val homeSent = sendGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+        if (!homeSent) {
+            Log.w(TAG, "HOME refused by the navigation budget; the home intent below still leaves the dangerous page.")
+        }
         try {
             launchHomeIntent()
         } catch (e: Exception) {
@@ -92,7 +112,7 @@ class TamperResponseHandler @Inject constructor(
         // 3. Mount rich Block Overlay over the Home screen after the 150ms transition.
         //    homeAlreadySent=true tells triggerBlockWithHomeAlreadySent to skip the second
         //    HOME that forceCloseApp() would otherwise fire inside onAttached.
-        postDelayed(150L) {
+        postDelayed(Timings.OVERLAY_MOUNT_AFTER_HOME_DELAY_MS) {
             onTriggerBlockWithHomeAlreadySent(
                 sourcePackage,
                 reason,
@@ -102,6 +122,43 @@ class TamperResponseHandler @Inject constructor(
             )
         }
 
+        logTamper(scope, targetName, sourcePackage, reason)
+    }
+
+    /**
+     * Tapjacking-safe contest of an attempt on FocusGuard's own Accessibility Service.
+     *
+     * No global action is performed. The secure setting is re-asserted instead, which the OS
+     * honours in well under 100 ms (measured on Vivo V2355: unbind -> re-bind in 69 ms). The
+     * full-screen recovery gate is shown only when that silent heal cannot be verified — i.e.
+     * WRITE_SECURE_SETTINGS is missing or the OEM re-blanked the value — because then the Toast
+     * alone would leave the toggle genuinely off.
+     */
+    private fun contestWithoutNavigating(
+        sourcePackage: String,
+        targetName: String,
+        onHealAccessibilityInPlace: () -> Boolean,
+        onShowRecoveryCover: () -> Unit
+    ) {
+        val isHealed = try {
+            onHealAccessibilityInPlace()
+        } catch (e: Exception) {
+            Log.e(TAG, "In-place accessibility re-assert failed", e)
+            false
+        }
+        Log.w(
+            TAG,
+            "OEM scan window active: contested [$targetName] without global action (pkg=$sourcePackage) | silentHealVerified=$isHealed"
+        )
+        if (!isHealed) onShowRecoveryCover()
+    }
+
+    private fun logTamper(
+        scope: CoroutineScope,
+        targetName: String,
+        sourcePackage: String,
+        reason: String
+    ) {
         scope.launch {
             repository.logEvent(
                 EventType.APP_BLOCKED,
@@ -117,12 +174,7 @@ class TamperResponseHandler @Inject constructor(
             targetName: String,
             blockType: OverlayBlockType,
             reason: String
-        ): Boolean {
-            return targetName == "Device Administrator" ||
-                    targetName == "Hide Apps Protection" ||
-                    blockType == OverlayBlockType.UNINSTALL_ATTEMPT ||
-                    reason.contains("Device Admin", ignoreCase = true)
-        }
+        ): Boolean = TamperResponsePolicy.isExemptFromSuppression(targetName, blockType, reason)
 
         fun buildToastMessage(targetName: String, customToastMessage: String?): String {
             return customToastMessage

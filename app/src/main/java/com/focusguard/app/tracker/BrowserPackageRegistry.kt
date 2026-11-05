@@ -1,9 +1,5 @@
 package com.focusguard.app.tracker
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -135,9 +131,23 @@ class BrowserPackageRegistry @Inject constructor() {
             "com.xbrowser.play",
             "com.mycompany.app.soulbrowser"
         )
-    }
 
-    private val unsupportedBrowserCache = ConcurrentHashMap<String, Boolean>()
+        /**
+         * Name fragments that identify an unverified browser package. Kept as offline name
+         * checks instead of a PackageManager web-intent query so detection never matches
+         * Custom Tabs hosts and never performs a binder round-trip on the accessibility thread.
+         */
+        private val UNVERIFIED_BROWSER_NAME_HINTS = listOf(
+            "puffin",
+            "aloha.browser",
+            "soulbrowser",
+            "xbrowser",
+            "pure.browser",
+            "dolphin",
+            "ghostery",
+            "browser"
+        )
+    }
 
     fun isSupportedBrowser(pkg: String): Boolean {
         val lower = pkg.lowercase()
@@ -148,45 +158,25 @@ class BrowserPackageRegistry @Inject constructor() {
                 lower.contains("firefox")
     }
 
-    fun isUnsupportedBrowser(pkg: String, context: Context? = null): Boolean {
+    /**
+     * True only for packages this registry classifies as browsers whose content FocusGuard
+     * cannot filter safely.
+     *
+     * The decision is deliberately registry-only. The previous fallback asked PackageManager
+     * whether the package resolves an https VIEW intent, which also matches every Custom Tabs
+     * host and deep-link app (mail, social, shopping), so a browser-loophole fix could block
+     * the whole phone. Attribution rule: link handlers are NOT browsers; quarantine only when
+     * the package itself ships a browser surface. This also removes a binder round-trip from
+     * the accessibility thread.
+     */
+    fun isUnsupportedBrowser(pkg: String): Boolean {
         val lower = pkg.lowercase()
         if (lower.startsWith("com.focusguard.app")) return false
         if (VERIFIED_SUPPORTED_BROWSERS.contains(lower)) return false
         if (isYouTubePackage(lower) || isMessagingOrChatPackage(lower)) return false
 
-        unsupportedBrowserCache[lower]?.let { return it }
-
-        if (KNOWN_UNSUPPORTED_BROWSERS.contains(lower) ||
-            lower.contains("puffin") ||
-            lower.contains("aloha.browser") ||
-            lower.contains("soulbrowser") ||
-            lower.contains("xbrowser") ||
-            lower.contains("pure.browser") ||
-            lower.contains("dolphin") ||
-            lower.contains("ghostery") ||
-            (lower.contains("browser") && !VERIFIED_SUPPORTED_BROWSERS.contains(lower))
-        ) {
-            unsupportedBrowserCache[lower] = true
-            return true
-        }
-
-        if (context != null) {
-            try {
-                val pm = context.packageManager
-                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com")).apply {
-                    addCategory(Intent.CATEGORY_BROWSABLE)
-                    setPackage(lower)
-                }
-                val matches = pm.queryIntentActivities(webIntent, 0)
-                val isBrowser = matches.isNotEmpty()
-                unsupportedBrowserCache[lower] = isBrowser
-                return isBrowser
-            } catch (_: Exception) {
-                // ignore
-            }
-        }
-
-        return false
+        return KNOWN_UNSUPPORTED_BROWSERS.contains(lower) ||
+                UNVERIFIED_BROWSER_NAME_HINTS.any { lower.contains(it) }
     }
 
     fun isYouTubePackage(pkg: String): Boolean {

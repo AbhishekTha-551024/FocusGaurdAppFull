@@ -1,6 +1,7 @@
 package com.focusguard.app.feature.auth.data.repository
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
@@ -10,6 +11,8 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import com.focusguard.app.blockers.SessionBlockManager
+import com.focusguard.app.core.common.privacy.LogPrivacy
+import com.focusguard.app.core.datastore.DirectBootStorage
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.model.AuthUser
 import com.focusguard.app.data.repository.PartnershipRepository
@@ -48,7 +51,8 @@ class AuthRepositoryImpl @Inject constructor(
 
     private val authScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val syncCache = context.getSharedPreferences("focusguard_sync_cache", Context.MODE_PRIVATE)
+    private val syncCache: SharedPreferences
+        get() = DirectBootStorage.readCache(context)
 
     override val currentUser: Flow<AuthUser?> = prefs.currentAuthUser
     override val isLoggedIn: Flow<Boolean> = prefs.currentAuthUser.map { it != null }
@@ -149,7 +153,11 @@ class AuthRepositoryImpl @Inject constructor(
                 .await()
 
             syncCache.edit().putLong("last_device_sync_time", now).apply()
-            Log.i(TAG, "Successfully synced user device to Firestore: email=$userEmail deviceId=$deviceId")
+            Log.i(
+                TAG,
+                "Successfully synced user device to Firestore: " +
+                    "user=${LogPrivacy.emailRef(userEmail)} device=${LogPrivacy.deviceRef(deviceId)}"
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to sync user device to Firestore: ${e.message}")
         }

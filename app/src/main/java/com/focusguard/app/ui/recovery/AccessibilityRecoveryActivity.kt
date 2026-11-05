@@ -10,42 +10,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.focusguard.app.domain.policy.AccessibilityRecoveryPolicy
+import com.focusguard.app.recovery.AccessibilityRecoveryHelper
+import com.focusguard.app.ui.theme.FocusGuardTheme
+import com.focusguard.app.utils.BatteryOptimizationHelper
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import com.focusguard.app.recovery.AccessibilityRecoveryHelper
-import com.focusguard.app.ui.theme.*
-import com.focusguard.app.utils.BatteryOptimizationHelper
-import dagger.hilt.android.AndroidEntryPoint
 
 /**
  * AccessibilityRecoveryActivity
@@ -55,25 +30,35 @@ import dagger.hilt.android.AndroidEntryPoint
  *
  * Guarantees:
  * 1. Appears over lockscreen (showWhenLocked) and turns screen on.
- * 2. Provides 1-tap deep-link to restore the Accessibility toggle.
+ * 2. Opens the Android Accessibility screen where the toggle can be switched back on. It does not
+ *    claim to restore the toggle itself — silent restore happens earlier, in
+ *    [AccessibilityRecoveryHelper.restoreProtectionFast].
  * 3. Shows device-specific instructions (e.g. Vivo/iQOO) to permanently fix reboot disablement.
- * 4. Automatically dismisses itself as soon as Accessibility is restored.
+ * 4. Automatically dismisses itself only after the required service(s) are healthy again.
  * 5. Consumes back button to prevent circumventing protection.
+ * 6. Words the shield according to the real [RecoveryCause], not a blanket "restart" claim.
  */
 @AndroidEntryPoint
 class AccessibilityRecoveryActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_REASON = "extra_reason"
+        private const val EXTRA_ALLOW_ADMIN_REACTIVATION = "extra_allow_admin_reactivation"
+        private const val RESTORED_MESSAGE = "🛡️ FocusGuard Protection Restored!"
 
-        fun start(context: Context, reason: String = "") {
-            if (!AccessibilityRecoveryHelper.isProtectionActive(context)) {
+        fun start(
+            context: Context,
+            reason: String = "",
+            allowAdminReactivation: Boolean = false
+        ) {
+            if (!allowAdminReactivation && !AccessibilityRecoveryHelper.isProtectionActive(context)) {
                 android.util.Log.i("AccessibilityRecovery", "Protection is inactive, skipping start of AccessibilityRecoveryActivity")
                 return
             }
             try {
                 val intent = Intent(context, AccessibilityRecoveryActivity::class.java).apply {
                     putExtra(EXTRA_REASON, reason)
+                    putExtra(EXTRA_ALLOW_ADMIN_REACTIVATION, allowAdminReactivation)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_SINGLE_TOP or
                             Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -108,16 +93,39 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
     @javax.inject.Inject
     lateinit var repository: com.focusguard.app.data.repository.FocusGuardRepository
 
-    private var hasNavigatedToSettings = false
     private var settingsGuardJob: Job? = null
+
+    /** Classified once per intent so the guard and every label agree about the reason. */
+    private val cause: RecoveryCause by lazy {
+        RecoveryCause.fromReason(intent.getStringExtra(EXTRA_REASON) ?: "")
+    }
+
+    private val isAdminReactivationRecovery: Boolean by lazy {
+        intent.getBooleanExtra(EXTRA_ALLOW_ADMIN_REACTIVATION, false) &&
+                cause.requiresAdminReactivation
+    }
+
+    private fun isRecoveryProtected(): Boolean {
+        val protectionStored = repository.isFastUninstallProtectionEnabled()
+        val adminActive = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
+            .isDeviceAdminActive(this)
+        return protectionStored && (adminActive || isAdminReactivationRecovery)
+    }
+
+    private fun canDismissRecovery(): Boolean =
+        AccessibilityRecoveryPolicy.canDismissRecovery(
+            isAccessibilityHealthy = AccessibilityRecoveryHelper.isAccessibilityHealthy(this),
+            isAdminBlock = cause.isAdminBlock,
+            requiresAdminReactivation = isAdminReactivationRecovery,
+            isDeviceAdminActive = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
+                .isDeviceAdminActive(this)
+        )
 
     private fun startSettingsGuard() {
         if (settingsGuardJob?.isActive == true) return
         settingsGuardJob = lifecycleScope.launch(Dispatchers.IO) {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
-            val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
-            val isAdminBlock = reason.contains("Admin", ignoreCase = true)
-            while (isActive && (isAdminBlock || !AccessibilityRecoveryHelper.isAccessibilityActive(this@AccessibilityRecoveryActivity))) {
+            while (isActive && !canDismissRecovery()) {
                 delay(100L)
                 val now = System.currentTimeMillis()
                 val events = usm?.queryEvents(now - 2000L, now)
@@ -138,7 +146,7 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
                         topPkg == "com.android.packageinstaller" ||
                         topPkg == "com.vivo.doubleinstance" ||
                         topPkg == "com.vivo.abe"
-                if (isDangerous) {
+                if (isDangerous && !isAdminReactivationRecovery) {
                     val isA11yScreen = topClass?.contains("Accessibility", ignoreCase = true) == true
                     if (!isA11yScreen && topClass != null) {
                         android.util.Log.w("AccessibilityRecovery", "Tamper attempt detected in $topPkg ($topClass)! Pulling recovery shield back to front.")
@@ -149,21 +157,28 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
                     }
                 }
             }
+            if (isActive && canDismissRecovery()) {
+                android.util.Log.i("AccessibilityRecovery", "Required recovery services are restored. Dismissing recovery shield.")
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        Toast.makeText(this@AccessibilityRecoveryActivity, RESTORED_MESSAGE, Toast.LENGTH_LONG).show()
+                        finish()
+                    }
+                }
+            }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val isProtected = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(this) &&
-                repository.isFastUninstallProtectionEnabled()
-        val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
-        val isAdminBlock = reason.contains("Admin", ignoreCase = true)
-        if (!isProtected || (!isAdminBlock && AccessibilityRecoveryHelper.isAccessibilityActive(this))) {
+        if (!isRecoveryProtected() || canDismissRecovery()) {
             finish()
             return
         }
         startSettingsGuard()
         enableEdgeToEdge()
+        // Shield content stays out of screenshots, screen recording and the Recents thumbnail.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -178,12 +193,12 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (AccessibilityRecoveryHelper.isAccessibilityActive(this@AccessibilityRecoveryActivity)) {
+                if (canDismissRecovery()) {
                     finish()
                 } else {
                     Toast.makeText(
                         this@AccessibilityRecoveryActivity,
-                        "⚠️ Accessibility must be turned ON to resume FocusGuard protection.",
+                        backBlockedMessage(),
                         Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -193,31 +208,57 @@ class AccessibilityRecoveryActivity : ComponentActivity() {
         setContent {
             FocusGuardTheme {
                 AccessibilityRecoveryScreen(
+                    cause = cause,
                     onRestoreClick = {
-                        hasNavigatedToSettings = true
                         AccessibilityRecoveryHelper.openAccessibilitySettings(this@AccessibilityRecoveryActivity)
                     },
                     onOemFixClick = {
                         BatteryOptimizationHelper.openAutostartSettings(this@AccessibilityRecoveryActivity)
+                    },
+                    onAdminRestoreClick = {
+                        openDeviceAdminActivation()
                     }
                 )
             }
         }
     }
 
+    private fun backBlockedMessage(): String = if (cause.isAdminBlock) {
+        "Device Admin must be restored before FocusGuard can resume protection."
+    } else {
+        "⚠️ Accessibility must be turned ON to resume FocusGuard protection."
+    }
+
+    private fun openDeviceAdminActivation() {
+        try {
+            val component = android.content.ComponentName(
+                this,
+                com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver::class.java
+            )
+            startActivity(
+                Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                    putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
+                    putExtra(
+                        android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        com.focusguard.app.recovery.ADMIN_REASK_EXPLANATION
+                    )
+                }
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("AccessibilityRecovery", "Failed to open Device Admin activation", e)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
-        val isProtected = com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver.isDeviceAdminActive(this) &&
-                repository.isFastUninstallProtectionEnabled()
-        if (!isProtected) {
+        if (!isRecoveryProtected()) {
             finish()
             return
         }
-        val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
-        val isAdminBlock = reason.contains("Admin", ignoreCase = true)
-        // If the user turned Accessibility ON and not in Admin Block mode, finish and confirm
-        if (!isAdminBlock && AccessibilityRecoveryHelper.isAccessibilityActive(this)) {
-            Toast.makeText(this, "🛡️ FocusGuard Protection Restored!", Toast.LENGTH_LONG).show()
+        // A Settings toggle can be ON before Android has bound the service. Only a healthy service
+        // can dismiss recovery and show the restored confirmation.
+        if (canDismissRecovery()) {
+            Toast.makeText(this, RESTORED_MESSAGE, Toast.LENGTH_LONG).show()
             finish()
         }
     }

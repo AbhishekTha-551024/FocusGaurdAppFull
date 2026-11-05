@@ -15,6 +15,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "FocusGuardService"
+private const val ACTIVE_CALL_RECHECK_INTERVAL_MS = 1000L
 
 /**
  * Pure delay computation for in-foreground daily time limit monitoring.
@@ -55,7 +56,9 @@ class ForegroundSessionTracker(
     private val scope: CoroutineScope,
     private val isSystemOrLauncherPackage: (String) -> Boolean,
     private val onTriggerBlock: (sourcePackage: String, reason: String, blockType: OverlayBlockType, targetName: String, description: String) -> Unit,
-    private val onStopBrowserHeartbeat: () -> Unit
+    private val onStopBrowserHeartbeat: () -> Unit,
+    private val isCriticalCallSurface: (String) -> Boolean = { false },
+    private val isPermanentCallSurface: (String) -> Boolean = { false }
 ) {
     var currentPackage: String? = null
         private set
@@ -118,7 +121,7 @@ class ForegroundSessionTracker(
      * Launches real-time in-foreground polling for tracked apps with daily time limits or active schedules.
      */
     fun startForegroundPollingIfTracked(pkg: String, appLabel: String) {
-        if (isSystemOrLauncherPackage(pkg)) return
+        if (isSystemOrLauncherPackage(pkg) || isPermanentCallSurface(pkg)) return
         if (foregroundPollingJob?.isActive == true && currentPackage == pkg) return
 
         foregroundPollingJob?.cancel()
@@ -138,6 +141,11 @@ class ForegroundSessionTracker(
             val sessionStartTime = if (currentStartTime > 0L) currentStartTime else SystemClock.elapsedRealtime()
 
             while (isActive && currentPackage == pkg) {
+                if (isCriticalCallSurface(pkg)) {
+                    delay(ACTIVE_CALL_RECHECK_INTERVAL_MS)
+                    continue
+                }
+
                 val liveSessionMs = (SystemClock.elapsedRealtime() - sessionStartTime).coerceAtLeast(0L)
 
                 // 1. Millisecond-accurate daily time limit evaluation (Zero Binder IPC in loop!)
@@ -162,11 +170,9 @@ class ForegroundSessionTracker(
 
                 // 2. Schedule boundary evaluation (0ms fast-path check)
                 if (hasSchedules) {
-                    val isAppInBlocklist = repository.isFastBlockedApp(pkg)
                     val scheduleBlock = scheduleEvaluator.isBlockedBySchedule(
                         packageName = pkg,
-                        schedules = repository.getFastActiveSchedules(),
-                        isAppBlockedInBlocklist = isAppInBlocklist
+                        schedules = repository.getFastActiveSchedules()
                     )
                     if (scheduleBlock != null) {
                         Log.i(TAG, "In-foreground real-time monitoring caught schedule boundary for $pkg")
@@ -210,4 +216,3 @@ class ForegroundSessionTracker(
         currentStartTime = 0L
     }
 }
-

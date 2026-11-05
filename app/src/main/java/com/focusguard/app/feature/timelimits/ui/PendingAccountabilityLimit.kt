@@ -1,6 +1,6 @@
 package com.focusguard.app.feature.timelimits.ui
 
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.AppInfo
 
 /**

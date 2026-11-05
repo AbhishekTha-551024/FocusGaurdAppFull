@@ -4,6 +4,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.focusguard.app.blockers.ReelBlocker
 import com.focusguard.app.data.repository.FocusGuardRepository
+import com.focusguard.app.data.repository.isShortFormContentBlocked
 import com.focusguard.app.overlay.manager.OverlayBlockType
 import com.focusguard.app.tracker.BrowserHeartbeatTracker
 import com.focusguard.app.tracker.BrowserUrlTracker
@@ -42,12 +43,7 @@ class HeartbeatCoordinator @Inject constructor(
         val isBrowser = browserUrlTracker.isSupportedBrowser(pkg)
         val isYt = browserUrlTracker.isYouTubePackage(pkg)
         val isReelTarget = reelBlocker.isTargetPackage(pkg)
-        val isReelBlockedForPkg = when (pkg) {
-            ReelBlocker.INSTAGRAM_PACKAGE -> repository.isFastInstagramReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-            ReelBlocker.FACEBOOK_PACKAGE, ReelBlocker.FACEBOOK_LITE_PACKAGE -> repository.isFastFacebookReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-            ReelBlocker.YOUTUBE_PACKAGE -> repository.isFastYouTubeShortsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-            else -> repository.isFastShortsReelsBlockEnabled()
-        }
+        val isReelBlockedForPkg = repository.isShortFormContentBlocked(pkg)
         val hasKeywords = repository.getFastBlockedKeywords().isNotEmpty()
         val shouldStartHeartbeat = (isBrowser || isYt || (isReelTarget && isReelBlockedForPkg) || hasKeywords) &&
                 !browserUrlTracker.isMessagingOrChatPackage(pkg)
@@ -131,4 +127,3 @@ class HeartbeatCoordinator @Inject constructor(
         }
     }
 }
-

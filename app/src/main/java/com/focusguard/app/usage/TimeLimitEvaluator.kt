@@ -12,6 +12,17 @@ sealed interface LimitStatus {
     data class Exceeded(val usedMinutes: Int, val limitMinutes: Int) : LimitStatus
 }
 
+internal fun trackingDateChanged(
+    previousYear: Int,
+    previousDayOfYear: Int,
+    previousTimeZone: String,
+    currentYear: Int,
+    currentDayOfYear: Int,
+    currentTimeZone: String
+): Boolean = previousYear != currentYear ||
+    previousDayOfYear != currentDayOfYear ||
+    previousTimeZone != currentTimeZone
+
 @Singleton
 class TimeLimitEvaluator @Inject constructor(
     private val usageStatsReader: UsageStatsReader
@@ -19,13 +30,32 @@ class TimeLimitEvaluator @Inject constructor(
     // In-memory accumulated session tracking to provide 0ms real-time precision
     // and bypass Android UsageStatsManager event-buffering lag.
     private val accumulatedSessionMsToday = ConcurrentHashMap<String, Long>()
-    private var trackingDayOfYear = Calendar.getInstance().get(Calendar.DAY_OF_YEAR)
+    private val trackingDayLock = Any()
+    private val initialCalendar = Calendar.getInstance()
+    private var trackingYear = initialCalendar.get(Calendar.YEAR)
+    private var trackingDayOfYear = initialCalendar.get(Calendar.DAY_OF_YEAR)
+    private var trackingTimeZone = initialCalendar.timeZone.id
 
     private fun checkDayReset() {
-        val currentDay = Calendar.getInstance().get(Calendar.DAY_OF_YEAR)
-        if (currentDay != trackingDayOfYear) {
-            accumulatedSessionMsToday.clear()
-            trackingDayOfYear = currentDay
+        val calendar = Calendar.getInstance()
+        val currentYear = calendar.get(Calendar.YEAR)
+        val currentDay = calendar.get(Calendar.DAY_OF_YEAR)
+        val currentTimeZone = calendar.timeZone.id
+        synchronized(trackingDayLock) {
+            if (trackingDateChanged(
+                    trackingYear,
+                    trackingDayOfYear,
+                    trackingTimeZone,
+                    currentYear,
+                    currentDay,
+                    currentTimeZone
+                )
+            ) {
+                accumulatedSessionMsToday.clear()
+                trackingYear = currentYear
+                trackingDayOfYear = currentDay
+                trackingTimeZone = currentTimeZone
+            }
         }
     }
 
@@ -36,8 +66,7 @@ class TimeLimitEvaluator @Inject constructor(
         if (elapsedMs <= 0L) return
         checkDayReset()
         val pkg = packageName.lowercase()
-        val current = accumulatedSessionMsToday[pkg] ?: 0L
-        accumulatedSessionMsToday[pkg] = current + elapsedMs
+        accumulatedSessionMsToday.merge(pkg, elapsedMs, Long::plus)
     }
 
     /**
@@ -129,4 +158,3 @@ class TimeLimitEvaluator @Inject constructor(
         return exceeded
     }
 }
-

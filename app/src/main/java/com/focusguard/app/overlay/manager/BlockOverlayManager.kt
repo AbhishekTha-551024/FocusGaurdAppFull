@@ -27,6 +27,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
@@ -48,6 +49,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "FGBlockOverlay"
+
+/** Poll interval while a held shield owns the screen. */
+private const val HOLD_WATCH_INTERVAL_MS = 500L
+
+/** Consecutive "blocked app not on screen" probes required before releasing a held shield. */
+private const val HOLD_RELEASE_MISSES = 2
+
+/**
+ * A shield mounted during an app transition briefly sees no window for the blocked package at
+ * all (launcher / OEM card events land in the same instant). Releases are ignored for this long
+ * so the shield cannot dismiss itself seconds after appearing.
+ */
+private const val HOLD_MOUNT_GRACE_MS = 1500L
 
 enum class OverlayBlockType {
     UNINSTALL_ATTEMPT,
@@ -72,11 +86,24 @@ class BlockOverlayManager @Inject constructor(
     private var currentOverlayView: View? = null
     private var currentLifecycleOwner: ServiceLifecycleOwner? = null
     private var dismissRunnable: Runnable? = null
+    private var holdWatchRunnable: Runnable? = null
+    private var holdMissCount = 0
+    private var holdMountedAtElapsed = 0L
+    private var lastHoldCheckAtElapsed = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var _isShowing = false
     val isOverlayShowing: Boolean get() = _isShowing
+
+    /**
+     * Lower-case package that owns the currently held shield, or null when the overlay is a
+     * transient one (countdown auto-dismiss). A held shield stays mounted while this package
+     * is in the foreground and is released as soon as the user switches away from it.
+     */
+    @Volatile
+    private var _holdPackage: String? = null
+    val holdPackage: String? get() = _holdPackage
 
     // Overlay theme settings (updated from ViewModel before showing)
     var currentPresetId: Int = 0
@@ -102,10 +129,11 @@ class BlockOverlayManager @Inject constructor(
         description: String? = null,
         customMessage: String? = null,
         sendHomeOnDismiss: Boolean = true,
+        holdUntilForegroundChanges: Boolean = false,
         onAttached: () -> Unit = {},
         onDismissed: () -> Unit = {}
     ) {
-        Log.i(TAG, "showOverlay called: type=$blockType target=$targetName pkg=$sourcePackage duration=${durationSeconds}s isAlreadyShowing=$_isShowing")
+        Log.i(TAG, "showOverlay called: type=$blockType target=$targetName pkg=$sourcePackage duration=${durationSeconds}s hold=$holdUntilForegroundChanges isAlreadyShowing=$_isShowing")
         if (_isShowing) {
             Log.d(TAG, "showOverlay: Overlay is already showing, re-asserting and resetting timer for $sourcePackage.")
             dismissInternal("showOverlay_reassert")
@@ -115,13 +143,15 @@ class BlockOverlayManager @Inject constructor(
         if (Looper.myLooper() == Looper.getMainLooper()) {
             showOverlayInternal(
                 durationSeconds, blockType, targetName, sourcePackage,
-                description, customMessage, sendHomeOnDismiss, onAttached, onDismissed
+                description, customMessage, sendHomeOnDismiss, holdUntilForegroundChanges,
+                onAttached, onDismissed
             )
         } else {
             mainHandler.post {
                 showOverlayInternal(
                     durationSeconds, blockType, targetName, sourcePackage,
-                    description, customMessage, sendHomeOnDismiss, onAttached, onDismissed
+                    description, customMessage, sendHomeOnDismiss, holdUntilForegroundChanges,
+                    onAttached, onDismissed
                 )
             }
         }
@@ -135,6 +165,7 @@ class BlockOverlayManager @Inject constructor(
         description: String? = null,
         customMessage: String? = null,
         sendHomeOnDismiss: Boolean = true,
+        holdUntilForegroundChanges: Boolean = false,
         onAttached: () -> Unit = {},
         onDismissed: () -> Unit = {}
     ) {
@@ -145,6 +176,12 @@ class BlockOverlayManager @Inject constructor(
 
         // Cleanly remove any existing overlay view first (100% synchronous)
         dismissInternal()
+
+        val holdPackage = if (holdUntilForegroundChanges && !sourcePackage.isNullOrBlank()) {
+            sourcePackage.lowercase()
+        } else {
+            null
+        }
 
         val lifecycleOwner = ServiceLifecycleOwner()
         currentLifecycleOwner = lifecycleOwner
@@ -169,9 +206,13 @@ class BlockOverlayManager @Inject constructor(
                         wallpaperBitmap = wallpaperBitmap,
                         presetId = presetId,
                         dimAlpha = dimAlpha,
+                        holdUntilForegroundChanges = holdPackage != null,
                         onDismiss = {
+                            val wasHeld = holdPackage != null
                             dismissOverlay()
-                            if (sendHomeOnDismiss) {
+                            // Held shields only reach this point when the user explicitly taps
+                            // "Leave this app" after the countdown; sending HOME is that action.
+                            if (sendHomeOnDismiss || wasHeld) {
                                 sendToHome(service)
                             }
                             onDismissed()
@@ -181,22 +222,29 @@ class BlockOverlayManager @Inject constructor(
             }
         }
 
-        attachOverlay(service, composeView, onAttached)
+        attachOverlay(service, composeView, allowHomeKey = holdPackage != null, onAttached = onAttached)
+        // Publish the hold target only after the view was actually attached, so a failed
+        // addView can never leave a phantom package that the guard tries to release.
+        _holdPackage = if (_isShowing) holdPackage else null
+        if (_holdPackage != null) startHoldWatcher()
 
-        // Safety fallback timeout: auto-dismiss if compose countdown fails to dismiss
-        val maxWaitMs = ((durationSeconds + 5) * 1000L).coerceIn(10_000L, 60_000L)
-        val safetyTimeout = Runnable {
-            if (_isShowing) {
-                Log.w(TAG, "Safety fallback timeout triggered ($maxWaitMs ms) -> force dismissing overlay.")
-                dismissInternal()
-                if (sendHomeOnDismiss) {
-                    sendToHome(service)
+        // Safety fallback timeout: auto-dismiss a transient overlay if the compose countdown
+        // fails. Held shields are intentionally persistent, so they have no timer at all.
+        if (holdPackage == null) {
+            val maxWaitMs = ((durationSeconds + 5) * 1000L).coerceIn(10_000L, 60_000L)
+            val safetyTimeout = Runnable {
+                if (_isShowing) {
+                    Log.w(TAG, "Safety fallback timeout triggered ($maxWaitMs ms) -> force dismissing overlay.")
+                    dismissInternal()
+                    if (sendHomeOnDismiss) {
+                        sendToHome(service)
+                    }
+                    onDismissed()
                 }
-                onDismissed()
             }
+            dismissRunnable = safetyTimeout
+            mainHandler.postDelayed(safetyTimeout, maxWaitMs)
         }
-        dismissRunnable = safetyTimeout
-        mainHandler.postDelayed(safetyTimeout, maxWaitMs)
     }
 
     fun showMindfulPauseOverlay(
@@ -265,7 +313,7 @@ class BlockOverlayManager @Inject constructor(
             }
         }
 
-        attachOverlay(service, composeView) {}
+        attachOverlay(service, composeView, onAttached = {})
 
         val safetyTimeout = Runnable {
             if (_isShowing) {
@@ -296,7 +344,12 @@ class BlockOverlayManager @Inject constructor(
         }
     }
 
-    private fun attachOverlay(service: Context, view: View, onAttached: () -> Unit) {
+    private fun attachOverlay(
+        service: Context,
+        view: View,
+        allowHomeKey: Boolean = false,
+        onAttached: () -> Unit = {}
+    ) {
         val wm = windowManager ?: (service.getSystemService(Context.WINDOW_SERVICE) as WindowManager).also {
             windowManager = it
         }
@@ -308,7 +361,10 @@ class BlockOverlayManager @Inject constructor(
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                     WindowManager.LayoutParams.FLAG_FULLSCREEN or
                     WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                    // A block screen that can be screenshotted or recorded is evidence about the
+                    // user's own app usage, and its absence in a screenshot tells on them.
+                    WindowManager.LayoutParams.FLAG_SECURE
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
             gravity = Gravity.CENTER
@@ -332,14 +388,15 @@ class BlockOverlayManager @Inject constructor(
         view.isFocusableInTouchMode = true
         view.requestFocus()
         view.setOnKeyListener { _, keyCode, _ ->
-            if (keyCode == KeyEvent.KEYCODE_BACK ||
-                keyCode == KeyEvent.KEYCODE_APP_SWITCH ||
-                keyCode == KeyEvent.KEYCODE_HOME
-            ) {
-                Log.d(TAG, "Hardware key $keyCode consumed by BlockOverlay")
-                true
-            } else {
-                false
+            when {
+                keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_APP_SWITCH -> {
+                    Log.d(TAG, "Hardware key $keyCode consumed by BlockOverlay")
+                    true
+                }
+                // Held block shields let the user leave with the system Home key. The overlay is
+                // released by ActiveOverlayGuard as soon as the launcher becomes foreground.
+                keyCode == KeyEvent.KEYCODE_HOME -> !allowHomeKey
+                else -> false
             }
         }
 
@@ -370,6 +427,64 @@ class BlockOverlayManager @Inject constructor(
         }
     }
 
+    /**
+     * Watches a held shield's package while the overlay owns the screen. Accessibility windows
+     * are the only reliable source here: while the shield is focused, Home / app switches do not
+     * always deliver a usable window-state event to the service.
+     */
+    private fun startHoldWatcher() {
+        stopHoldWatcher()
+        holdMissCount = 0
+        holdMountedAtElapsed = SystemClock.elapsedRealtime()
+        val watcher = object : Runnable {
+            override fun run() {
+                if (!_isShowing || _holdPackage.isNullOrBlank()) return
+                if (releaseHeldShieldIfForegroundLeft()) return
+                mainHandler.postDelayed(this, HOLD_WATCH_INTERVAL_MS)
+            }
+        }
+        holdWatchRunnable = watcher
+        mainHandler.postDelayed(watcher, HOLD_WATCH_INTERVAL_MS)
+    }
+
+    /**
+     * Releases a held shield once its package has stopped owning an application window.
+     *
+     * Three guards prevent the "shield dismisses itself seconds after appearing" bug:
+     * 1. A freshly mounted shield ignores the window probe entirely for [HOLD_MOUNT_GRACE_MS]
+     *    (the blocked app's window is not yet enumerable during the launch transition, and
+     *    launcher / OEM-card events land in that same instant).
+     * 2. Evaluations are throttled to one per [HOLD_WATCH_INTERVAL_MS]. GUARD 0 calls this on
+     *    every TYPE_WINDOWS_CHANGED event, so without throttling a single transient miss could
+     *    stack into two "consecutive" misses within milliseconds.
+     * 3. [HOLD_RELEASE_MISSES] throttled misses must agree before releasing, so a one-off
+     *    window re-creation (rotation, activity transition) cannot drop the shield.
+     *
+     * @return true if a held shield was released.
+     */
+    fun releaseHeldShieldIfForegroundLeft(): Boolean {
+        val heldPackage = _holdPackage ?: return false
+        val service = serviceRef?.get() ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - holdMountedAtElapsed < HOLD_MOUNT_GRACE_MS) return false
+        if (now - lastHoldCheckAtElapsed < HOLD_WATCH_INTERVAL_MS) return false
+        lastHoldCheckAtElapsed = now
+        if (ActiveWindowProbe.isPackageInForeground(service, heldPackage)) {
+            holdMissCount = 0
+            return false
+        }
+        holdMissCount++
+        if (holdMissCount < HOLD_RELEASE_MISSES) return false
+        Log.i(TAG, "Held shield: $heldPackage left the foreground -> releasing")
+        dismissInternal("hold_foreground_changed")
+        return true
+    }
+
+    private fun stopHoldWatcher() {
+        holdWatchRunnable?.let { mainHandler.removeCallbacks(it) }
+        holdWatchRunnable = null
+    }
+
     fun dismissOverlay() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             dismissInternal("dismissOverlay_direct")
@@ -379,9 +494,10 @@ class BlockOverlayManager @Inject constructor(
     }
 
     private fun dismissInternal(callerReason: String = "unknown") {
-        // 1. Cancel pending dismiss callback
+        // 1. Cancel pending dismiss callback and the held-shield foreground watcher
         dismissRunnable?.let { mainHandler.removeCallbacks(it) }
         dismissRunnable = null
+        stopHoldWatcher()
 
         // 2. Remove view synchronously from WindowManager
         currentOverlayView?.let { view ->
@@ -409,11 +525,13 @@ class BlockOverlayManager @Inject constructor(
         currentLifecycleOwner = null
 
         _isShowing = false
+        _holdPackage = null
+        holdMissCount = 0
     }
 
     private fun sendToHome(context: Context) {
         try {
-            (context as? AccessibilityService)?.performGlobalAction(
+            (context as? com.focusguard.app.service.FocusGuardAccessibilityService)?.sendGlobalAction(
                 AccessibilityService.GLOBAL_ACTION_HOME
             )
             val homeIntent = Intent(Intent.ACTION_MAIN).apply {

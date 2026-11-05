@@ -39,6 +39,7 @@ private val White40   = Color(0x66FFFFFF)
 fun PartnerApprovalPendingDialog(
     actionDescription: String,
     partnerEmail: String?,
+    statusMessage: String = "A request has been recorded. Your partner must approve it before this change applies.",
     onDismiss: () -> Unit
 ) {
     var isDialogMounted by remember { mutableStateOf(false) }
@@ -180,7 +181,7 @@ fun PartnerApprovalPendingDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "A request has been recorded. Your partner must approve it before this change applies.",
+                            text = statusMessage,
                             color = White90,
                             fontSize = 11.sp,
                             lineHeight = 15.sp

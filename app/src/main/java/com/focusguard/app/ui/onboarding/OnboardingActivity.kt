@@ -11,13 +11,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.focusguard.app.R
 import com.focusguard.app.blockers.SessionBlockManager
 import com.focusguard.app.core.designsystem.theme.FocusGuardTheme
 import com.focusguard.app.core.designsystem.theme.Forest950
@@ -34,12 +40,17 @@ import com.focusguard.app.feature.session.ui.SessionViewModel
 import com.focusguard.app.feature.settings.ui.SettingsViewModel
 import com.focusguard.app.feature.timelimits.ui.TimeLimitViewModel
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
+import com.focusguard.app.core.common.constants.Timings
 import com.focusguard.app.feature.auth.ui.components.SignInRequiredDialog
+import com.focusguard.app.ui.commitment.CommitmentRestoreGate
 import com.focusguard.app.ui.navigation.MainBottomBar
 import com.focusguard.app.ui.navigation.MainContentPager
 import com.focusguard.app.ui.navigation.MainTab
 import com.focusguard.app.ui.protection.OemGuidanceScreen
+import com.focusguard.app.sync.CloudSyncEngine
+import com.focusguard.app.sync.CloudSyncStartupGate
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -59,6 +70,8 @@ class OnboardingActivity : ComponentActivity() {
 
     @Inject
     lateinit var sessionBlockManager: SessionBlockManager
+    @Inject
+    lateinit var cloudSyncEngine: CloudSyncEngine
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -84,8 +97,11 @@ class OnboardingActivity : ComponentActivity() {
                 var pendingSignInAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
                 val authState by authViewModel.uiState.collectAsStateWithLifecycle()
+                val cloudSyncStatus by cloudSyncEngine.syncStatus.collectAsStateWithLifecycle()
+                val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
                 val sessionState by sessionViewModel.uiState.collectAsStateWithLifecycle()
                 val isOnboardingComplete by onboardingViewModel.isOnboardingComplete.collectAsStateWithLifecycle()
+                val restoreStatus by onboardingViewModel.commitmentRestoreStatus.collectAsStateWithLifecycle()
 
                 LaunchedEffect(authState.user) {
                     if (authState.user != null) {
@@ -114,7 +130,22 @@ class OnboardingActivity : ComponentActivity() {
                     }
                 }
 
-                if (!authState.isAuthResolved) {
+                // While the device commitment record is being consulted there is nowhere to go.
+                // Hard ceiling: the lookup is best-effort, so it can never be what locks the user out
+                // of their own phone. Releasing the gate does not release protection — a late restore
+                // still re-arms the lock, and the next cold start asks again.
+                var isRestoreGateTimedOut by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    delay(Timings.COMMITMENT_GATE_HARD_TIMEOUT_MS)
+                    isRestoreGateTimedOut = true
+                }
+                val isRestoreGating = restoreStatus.isGating && !isRestoreGateTimedOut
+
+                BackHandler(enabled = isRestoreGating) { }
+
+                if (isRestoreGating) {
+                    CommitmentRestoreGate(status = restoreStatus)
+                } else if (!authState.isAuthResolved) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -149,6 +180,25 @@ class OnboardingActivity : ComponentActivity() {
                         onSearchSuitcaseQueryChange = { q -> sessionViewModel.setSearchQuery(q) },
                         onBack = { isDeepFocusOpen = false }
                     )
+                } else if (CloudSyncStartupGate.shouldWaitForSettings(
+                        isAuthResolved = authState.isAuthResolved,
+                        isSignedIn = true,
+                        isLocalSettingsReady = settingsUiState.isInitialSettingsSnapshotLoaded,
+                        syncStatus = cloudSyncStatus
+                    )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Forest950),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = null,
+                            modifier = Modifier.size(96.dp)
+                        )
+                    }
                 } else {
                     Scaffold(
                         bottomBar = {
@@ -226,5 +276,8 @@ class OnboardingActivity : ComponentActivity() {
         }
         onboardingViewModel.refresh()
         homeViewModel.refreshPermissions()
+        // Adult shield: starts the DNS tunnel right after the user approves the system VPN
+        // consent dialog, and re-arms it if the OS or another VPN killed it.
+        settingsViewModel.ensureAdultShieldRunning()
     }
 }

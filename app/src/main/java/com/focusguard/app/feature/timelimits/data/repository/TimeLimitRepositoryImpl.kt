@@ -5,11 +5,12 @@ import com.focusguard.app.core.common.result.AppResult
 import com.focusguard.app.core.database.dao.AppTimeLimitDao
 import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.entity.AppTimeLimitEntity
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
+import com.focusguard.app.core.startup.CeStorageGate
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
 import com.focusguard.app.feature.timelimits.domain.repository.TimeLimitRepository
@@ -37,6 +38,7 @@ class TimeLimitRepositoryImpl @Inject constructor(
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase,
     private val usageStatsReader: UsageStatsReader,
     private val timeLimitEvaluator: TimeLimitEvaluator,
+    private val ceStorageGate: CeStorageGate,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : TimeLimitRepository {
 
@@ -50,6 +52,7 @@ class TimeLimitRepositoryImpl @Inject constructor(
 
     init {
         repoScope.launch {
+            ceStorageGate.awaitUnlocked()
             try {
                 appTimeLimitDao.watchAllTimeLimits().collect { list ->
                     cachedTimeLimits.clear()

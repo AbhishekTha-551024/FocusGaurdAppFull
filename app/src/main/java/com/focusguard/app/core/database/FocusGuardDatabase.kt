@@ -15,10 +15,9 @@ import com.focusguard.app.core.database.entity.*
         ScheduleEntity::class,
         PendingChangeEntity::class,
         PartnershipEntity::class,
-        MindfulAppEntity::class,
-        MindfulIntentLogEntity::class
+        MindfulAppEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 @TypeConverters(Converters::class)

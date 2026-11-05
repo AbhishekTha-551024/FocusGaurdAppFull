@@ -6,7 +6,19 @@ import com.focusguard.app.data.repository.ProtectionPermissionStatus
 
 object SettingsUiStateBuilder {
 
-    fun buildBaseState(args: Array<Any?>): Pair<SettingsUiState, Boolean> {
+    /**
+     * @param uptimeProvedDurationElapsed true only when the monotonic uptime ledger shows the whole
+     * configured duration really ran since the lock was armed. Opening the Settings screen disarms
+     * an expired lock, so that action must not be reachable by moving the wall clock from
+     * Settings > Date & time — the wall clock is one half of the rule, never the whole rule.
+     * @param remainingUptimeMs uptime ms still owed by the lock (required - elapsed); 0 for untimed
+     * protection, which then keeps the plain wall-clock countdown.
+     */
+    fun buildBaseState(
+        args: Array<Any?>,
+        uptimeProvedDurationElapsed: Boolean,
+        remainingUptimeMs: Long
+    ): Pair<SettingsUiState, Boolean> {
         val settings = args[0] as FocusGuardPreferences.SettingsSnapshot
         val perms = args[1] as ProtectionPermissionStatus
         val challenge = args[2] as? ActiveChallengeState
@@ -19,18 +31,23 @@ object SettingsUiStateBuilder {
         val showUninstallConfirm = args[9] as Boolean
         val permissionsRequired = args[10] as? String
 
+        val wallClockPastExpiry = System.currentTimeMillis() >= settings.uninstallProtectionExpiryTimestamp
         val isTimedLockExpired = settings.isUninstallProtectionEnabled &&
-                (settings.uninstallProtectionDays < 1 ||
-                 settings.uninstallProtectionExpiryTimestamp <= 0L ||
-                 System.currentTimeMillis() >= settings.uninstallProtectionExpiryTimestamp)
+                settings.uninstallProtectionDays >= 1 &&
+                // No expiry timestamp at all stays a corrupt state: disarm, exactly as before.
+                (settings.uninstallProtectionExpiryTimestamp <= 0L ||
+                 (wallClockPastExpiry && uptimeProvedDurationElapsed))
 
         val effectiveProtectionEnabled = if (isTimedLockExpired) false else settings.isUninstallProtectionEnabled
         val remainingDays = if (effectiveProtectionEnabled && settings.uninstallProtectionExpiryTimestamp > 0L) {
-            val diff = settings.uninstallProtectionExpiryTimestamp - System.currentTimeMillis()
+            val wallRemaining = settings.uninstallProtectionExpiryTimestamp - System.currentTimeMillis()
+            // The lock ends when BOTH clocks agree, so the honest countdown is the larger remainder.
+            val diff = if (remainingUptimeMs > wallRemaining) remainingUptimeMs else wallRemaining
             if (diff > 0) java.util.concurrent.TimeUnit.MILLISECONDS.toDays(diff) + 1 else 0L
         } else 0L
 
         val state = SettingsUiState(
+            isInitialSettingsSnapshotLoaded = true,
             challengeType = settings.challengeType,
             commitmentSentence = settings.commitmentSentence,
             timeDelayHours = settings.timeDelayHours,

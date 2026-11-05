@@ -9,7 +9,7 @@ import androidx.compose.runtime.Composable
 import com.focusguard.app.capability.Capability
 import com.focusguard.app.capability.CapabilityDetails
 import com.focusguard.app.capability.CapabilityState
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.feature.timelimits.ui.TimeLimitUiState
 import com.focusguard.app.ui.capability.CapabilityExplanationDialog
@@ -143,7 +143,12 @@ fun TimeLimitDialogsHost(
 
     uiState.pendingAccountabilityLimit?.let { pendingLimit ->
         val featureName = pendingLimit.app.appName
-        val actionVerb = if (pendingLimit.currentMinutes == 0) "Set Limit on $featureName" else "Modify Limit for $featureName"
+        val actionVerb = when {
+            pendingLimit.actionType == com.focusguard.app.core.model.ChangeType.DISABLE_LIMIT ->
+                "Remove Limit from $featureName"
+            pendingLimit.currentMinutes == 0 -> "Set Limit on $featureName"
+            else -> "Modify Limit for $featureName"
+        }
         ChangeChallengeTypeDialog(
             currentType = uiState.challengeType,
             currentSentence = uiState.commitmentSentence,
@@ -159,6 +164,7 @@ fun TimeLimitDialogsHost(
             PartnerApprovalPendingDialog(
                 actionDescription = challenge.description,
                 partnerEmail = null,
+                statusMessage = "Partner approval is not connected for Daily Limits yet. No change has been applied.",
                 onDismiss = onCancelChallenge
             )
         } else {

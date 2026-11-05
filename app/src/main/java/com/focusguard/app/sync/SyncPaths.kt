@@ -19,6 +19,13 @@ object SyncPaths {
     const val COLLECTION_ACCOUNTABILITY = "accountability"
     const val DOCUMENT_ACCOUNTABILITY_SETTINGS = "settings"
 
+    /**
+     * Device-keyed commitment records: `device_locks/{reinstallStableDeviceId}`.
+     * Outside the `users/{uid}` tree on purpose — a timed uninstall lock is owed by the DEVICE, so
+     * it must be found before (and independently of) any account signing in.
+     */
+    const val COLLECTION_DEVICE_LOCKS = "device_locks"
+
     // Common fields
     const val FIELD_PACKAGE_NAME = "packageName"
     const val FIELD_APP_NAME = "appName"
@@ -53,5 +60,12 @@ object SyncPaths {
     const val FIELD_CHALLENGE_TYPE = "challengeType"
     const val FIELD_COMMITMENT_SENTENCE = "commitmentSentence"
     const val FIELD_TIME_DELAY_HOURS = "timeDelayHours"
+
+    // Device Lock fields (device_locks/{deviceId})
+    const val FIELD_DEVICE_ID = "deviceId"
+    const val FIELD_IS_TIMED_LOCK_ACTIVE = "isTimedLockActive"
+    const val FIELD_LOCK_DAYS = "days"
+    const val FIELD_EXPIRY_WALL_MS = "expiryWallMs"
+    const val FIELD_RECORDED_AT_MS = "recordedAtMs"
 }
 

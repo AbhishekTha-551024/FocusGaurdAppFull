@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.runtime.Composable
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.feature.appblocker.ui.AppBlockerUiState
 import com.focusguard.app.ui.challenge.ChangeChallengeTypeDialog

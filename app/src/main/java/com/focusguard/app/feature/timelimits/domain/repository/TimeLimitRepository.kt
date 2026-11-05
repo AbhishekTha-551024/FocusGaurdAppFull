@@ -2,7 +2,7 @@ package com.focusguard.app.feature.timelimits.domain.repository
 
 import com.focusguard.app.core.common.result.AppResult
 import com.focusguard.app.core.database.entity.AppTimeLimitEntity
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.model.AppInfo
 import kotlinx.coroutines.flow.Flow

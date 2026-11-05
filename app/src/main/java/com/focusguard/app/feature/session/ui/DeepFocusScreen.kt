@@ -62,7 +62,7 @@ fun DeepFocusScreen(
     var showDisclosureDialog by remember { mutableStateOf(false) }
 
     fun refreshPermissions() {
-        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
+        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityConfiguredInSettings(context)
         isOverlayGranted = Settings.canDrawOverlays(context)
     }
 

@@ -16,6 +16,9 @@ import javax.inject.Singleton
 
 private const val TAG = "ScheduleSync"
 
+internal fun scheduleIdFromCloud(documentId: String, storedId: Long?): Long =
+    storedId ?: documentId.toLongOrNull() ?: 0L
+
 @Singleton
 class ScheduleSync @Inject constructor(
     private val scheduleDao: ScheduleDao,
@@ -31,6 +34,10 @@ class ScheduleSync @Inject constructor(
                 .await()
 
             for (doc in schedSnapshot.documents) {
+                val scheduleId = scheduleIdFromCloud(
+                    doc.id,
+                    doc.getLong(SyncPaths.FIELD_SCHEDULE_ID)
+                )
                 val title = doc.getString(SyncPaths.FIELD_TITLE) ?: "Focus Hours"
                 val pkg = doc.getString(SyncPaths.FIELD_PACKAGE_NAME)
                 val appName = doc.getString(SyncPaths.FIELD_APP_NAME)
@@ -39,6 +46,7 @@ class ScheduleSync @Inject constructor(
                 val end = doc.getLong(SyncPaths.FIELD_END_MINUTE_OF_DAY)?.toInt() ?: 1020
                 val isEnabled = doc.getBoolean(SyncPaths.FIELD_IS_ENABLED) ?: true
                 val entity = ScheduleEntity(
+                    id = scheduleId,
                     title = title,
                     packageName = pkg,
                     appName = appName,
@@ -113,4 +121,3 @@ class ScheduleSync @Inject constructor(
         }
     }
 }
-

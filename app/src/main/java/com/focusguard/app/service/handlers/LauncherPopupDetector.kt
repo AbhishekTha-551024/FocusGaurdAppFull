@@ -1,6 +1,5 @@
 package com.focusguard.app.service.handlers
 
-import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.focusguard.app.BuildConfig
@@ -19,12 +18,17 @@ private const val TAG = "FG:Launcher"
  * - A popup is classified as FocusGuard's popup ONLY IF:
  *   (a) Target latch is active, OR
  *   (b) Popup container subtree contains "FocusGuard" / "com.focusguard.app", OR
- *   (c) A node with text "FocusGuard" lies strictly inside the popup bounds.
+ *   (c) Vivo: the popup is anchored to the cached FocusGuard icon slot AND that slot no longer
+ *       holds a labelled icon (see LauncherTargetResolver.isPopupAnchoredToFocusGuard).
+ *   A home-screen icon that merely falls inside the popup's bounding box is NOT evidence: Vivo's
+ *   shortcut container spans several icon rows and overlaps other apps' icons.
  * - Clone / Uninstall clicks block ONLY when the latch is active OR an ancestor node (depth <= 5)
  *   specifically contains "FocusGuard" / "com.focusguard.app".
  */
 @Singleton
-class LauncherPopupDetector @Inject constructor() {
+class LauncherPopupDetector @Inject constructor(
+    private val targetResolver: LauncherTargetResolver
+) {
 
     fun isLauncherHideApps(className: String, rootNode: AccessibilityNodeInfo?): Boolean {
         return className.contains("HideApp", ignoreCase = true) ||
@@ -153,29 +157,14 @@ class LauncherPopupDetector @Inject constructor() {
             return true
         }
 
-        // (c) A node with text "FocusGuard" lies strictly INSIDE the popup bounding box
-        if (rootNode != null) {
-            val popupRect = Rect()
-            popupAnchorNode.getBoundsInScreen(popupRect)
-            if (popupRect.width() > 0 && popupRect.height() > 0) {
-                val fgNodes = rootNode.findAccessibilityNodeInfosByText("FocusGuard")
-                var contained = false
-                for (node in fgNodes) {
-                    val nodeRect = Rect()
-                    node.getBoundsInScreen(nodeRect)
-                    if (popupRect.contains(nodeRect)) {
-                        contained = true
-                        break
-                    }
-                }
-                fgNodes.forEach { SafeNodeUtils.safeRecycle(it) }
-                if (contained) {
-                    if (BuildConfig.DEBUG) {
-                        Log.d(TAG, "Popup identified for FocusGuard via strictly contained title node.")
-                    }
-                    return true
-                }
+        // (c) Vivo launcher removes the held icon's node while its popup is open. When the popup
+        //     is anchored to the cached FocusGuard slot and that slot no longer holds a labelled
+        //     icon, the popup is FocusGuard's. Measured, not guessed.
+        if (rootNode != null && targetResolver.isPopupAnchoredToFocusGuard(rootNode, popupAnchorNode)) {
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Popup identified for FocusGuard via anchored empty icon slot.")
             }
+            return true
         }
 
         return false

@@ -2,7 +2,6 @@ package com.focusguard.app.feature.mindful.ui
 
 import android.content.Context
 import android.provider.Settings
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,12 +21,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
+import com.focusguard.app.core.designsystem.theme.focusPageBackground
 import com.focusguard.app.feature.mindful.ui.components.*
 import com.focusguard.app.utils.AppIconLoader
 
-private val Forest900 = Color(0xFF07140D)
 private val Emerald500 = Color(0xFF22C55E)
 private val Emerald400 = Color(0xFF4ADE80)
 private val TextMuted  = Color(0x99FFFFFF)
@@ -43,10 +42,7 @@ fun MindfulAppsScreen(
     onChallengeSuccess: (Context) -> Unit = {},
     onCancelChallenge: () -> Unit = {},
     onActivateChallenge: (ChallengeType, String) -> Unit = { _, _ -> },
-    onDismissAccountability: () -> Unit = {},
-    onUpdateAllowanceMinutes: (packageName: String, minutes: Int) -> Unit = { _, _ -> },
-    onOpenJournal: () -> Unit = {},
-    onDismissJournal: () -> Unit = {}
+    onDismissAccountability: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var isAccessibilityEnabled by remember { mutableStateOf(false) }
@@ -55,7 +51,7 @@ fun MindfulAppsScreen(
     var showDisclosureDialog by remember { mutableStateOf(false) }
 
     fun refreshPermissions() {
-        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
+        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityConfiguredInSettings(context)
         isOverlayGranted = Settings.canDrawOverlays(context)
     }
 
@@ -70,31 +66,13 @@ fun MindfulAppsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (uiState.showJournalDialog) {
-        MindfulIntentJournalDialog(
-            logs = uiState.recentLogs,
-            walkedAwayCount = uiState.walkedAwayCount,
-            consciousOpensCount = uiState.consciousOpensCount,
-            onDismiss = onDismissJournal
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Forest900)
+            .focusPageBackground()
             .padding(horizontal = 16.dp)
     ) {
         Spacer(Modifier.height(12.dp))
-        MindfulVictoryBanner(
-            walkedAwayCount = uiState.walkedAwayCount,
-            onOpenJournal = onOpenJournal
-        )
-        Spacer(Modifier.height(10.dp))
-        MindfulPatternInsightsCard(
-            logs = uiState.recentLogs,
-            consciousOpensCount = uiState.consciousOpensCount
-        )
         MindfulSearchField(
             query = uiState.searchQuery,
             onQueryChange = onSearchQueryChange
@@ -128,7 +106,6 @@ fun MindfulAppsScreen(
                     }
                 },
                 onToggleMindfulApp = onToggleMindfulApp,
-                onUpdateAllowanceMinutes = onUpdateAllowanceMinutes,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -193,7 +170,6 @@ private fun MindfulAppsList(
     iconLoader: AppIconLoader,
     onCheckPermissionAndToggle: (AppInfo) -> Unit,
     onToggleMindfulApp: (AppInfo, Boolean) -> Unit,
-    onUpdateAllowanceMinutes: (packageName: String, minutes: Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -212,14 +188,11 @@ private fun MindfulAppsList(
                 )
             }
             items(uiState.mindfulApps, key = { "mindful_${it.packageName}" }) { app ->
-                val allowanceMins = uiState.appAllowanceMap[app.packageName] ?: 5
                 MindfulAppCard(
                     app = app,
                     isMindful = true,
-                    allowanceMinutes = allowanceMins,
                     iconLoader = iconLoader,
-                    onToggle = { onToggleMindfulApp(app, false) },
-                    onUpdateAllowance = { mins -> onUpdateAllowanceMinutes(app.packageName, mins) }
+                    onToggle = { onToggleMindfulApp(app, false) }
                 )
             }
             item {
@@ -258,10 +231,8 @@ private fun MindfulAppsList(
                 MindfulAppCard(
                     app = app,
                     isMindful = false,
-                    allowanceMinutes = 5,
                     iconLoader = iconLoader,
-                    onToggle = { onCheckPermissionAndToggle(app) },
-                    onUpdateAllowance = { }
+                    onToggle = { onCheckPermissionAndToggle(app) }
                 )
             }
         }

@@ -1,11 +1,11 @@
 package com.focusguard.app.core.database
 
 import androidx.room.TypeConverter
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
 import com.focusguard.app.core.database.entity.EventType
-import com.focusguard.app.core.database.entity.PendingStatus
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.PartnershipStatus
+import com.focusguard.app.core.model.PendingStatus
 
 /** Room type converters for enums and other non-primitive types. */
 class Converters {

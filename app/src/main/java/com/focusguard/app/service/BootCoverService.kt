@@ -8,31 +8,33 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
-import android.view.Gravity
-import android.view.View
-import android.view.WindowManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.setViewTreeLifecycleOwner
-import androidx.lifecycle.setViewTreeViewModelStoreOwner
-import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.focusguard.app.R
-import com.focusguard.app.service.ui.BootCoverContent
-import com.focusguard.app.ui.theme.FocusGuardTheme
-import com.focusguard.app.utils.ServiceLifecycleOwner
+import com.focusguard.app.core.startup.ProtectionStartupReadiness
+import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 import java.lang.ref.WeakReference
+
+private const val TAG = "FG:Shield"
+private const val CHANNEL_ID = "focusguard_boot_shield_channel"
+private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_BOOT_COVER_SHIELD
 
 /**
  * BootCoverService
@@ -40,35 +42,46 @@ import java.lang.ref.WeakReference
  * Temporary foreground service that displays a full-screen cover overlay immediately after device boot.
  *
  * Protection Rationale:
- * - Following a restart, Android's AccessibilityManager takes several seconds to bind to
- *   [FocusGuardAccessibilityService].
+ * - Following a restart, Android's AccessibilityManager takes time to bind to
+ *   [FocusGuardAccessibilityService] and publish its initial rules snapshot.
  * - During this gap, user could potentially access the launcher to uninstall or clone FocusGuard.
- * - This service mounts a TYPE_APPLICATION_OVERLAY window with full touch interception until
- *   [FocusGuardAccessibilityService.onServiceConnected] runs and signals [dismiss].
- *
- * Fallback & Safety:
- * - 35-second timer fallback: If the accessibility service fails to bind within 35 seconds,
- *   the overlay transitions to a recovery prompt with a functional "Turn ON Accessibility" button.
- * - Double race-condition verification: Checks [FocusGuardAccessibilityService.isServiceRunning]
- *   both immediately before and after mounting the overlay.
- * - Permission guard: Safely skips overlay mounting if SYSTEM_ALERT_WINDOW is not granted.
+ * - Delegates overlay window mounting to [BootCoverOverlayManager].
  */
+@AndroidEntryPoint
 class BootCoverService : Service() {
 
-    private var windowManager: WindowManager? = null
-    private var overlayView: View? = null
-    private var lifecycleOwner: ServiceLifecycleOwner? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
+    @Inject
+    lateinit var startupReadiness: ProtectionStartupReadiness
 
-    private var fallbackRunnable: Runnable? = null
+    internal lateinit var overlayManager: BootCoverOverlayManager
+        private set
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val readinessScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var isFallbackState by mutableStateOf(false)
+    private var sentinel: BootCoverSentinel? = null
+    private lateinit var timeoutController: BootCoverTimeoutController
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        overlayManager = BootCoverOverlayManager(this, startupReadiness)
+        timeoutController = BootCoverTimeoutController(
+            context = this,
+            handler = mainHandler,
+            startupReadiness = startupReadiness,
+            isOverlayAttached = { overlayManager.isOverlayAttached },
+            onFallback = { isFallbackState = true },
+            onMaximumDurationReached = { dismissInternal() }
+        )
         activeInstance = WeakReference(this)
         createNotificationChannel()
+        readinessScope.launch {
+            startupReadiness.state.collect { state ->
+                if (state.isReady) dismissInternal()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -102,9 +115,9 @@ class BootCoverService : Service() {
             Log.e(TAG, "Failed to start foreground notification: ${e.message}", e)
         }
 
-        // RACE CONDITION CHECK 1: If Accessibility Service already connected, do not show overlay!
-        if (FocusGuardAccessibilityService.isServiceRunning) {
-            Log.i(TAG, "Accessibility Service is already active before mounting overlay. Dismissing immediately.")
+        // RACE CONDITION CHECK 1: If the shield is verifiably back, do not show overlay!
+        if (BootCoverPolicy.shouldAbortMount(startupReadiness.isReady())) {
+            Log.i(TAG, "Protection startup is ready before mounting overlay. Dismissing immediately.")
             dismissInternal()
             return START_NOT_STICKY
         }
@@ -121,98 +134,35 @@ class BootCoverService : Service() {
     }
 
     private fun showCoverOverlay() {
-        if (overlayView != null) return
+        if (overlayManager.hasOverlayView) return
 
         mainHandler.post {
-            // RACE CONDITION CHECK 2 (on Main Looper): Check again before adding view
-            if (FocusGuardAccessibilityService.isServiceRunning) {
-                Log.i(TAG, "Accessibility Service connected while preparing view. Aborting overlay mount.")
-                dismissInternal()
-                return@post
-            }
-
-            try {
-                val wm = (getSystemService(Context.WINDOW_SERVICE) as? WindowManager).also {
-                    windowManager = it
-                } ?: run {
-                    Log.e(TAG, "WindowManager unavailable")
-                    stopSelf()
-                    return@post
+            overlayManager.mountOverlay(
+                isFallbackProvider = { isFallbackState },
+                onOpenAccessibilitySettings = { openAccessibilitySettings() },
+                onDismissRequested = { dismissInternal() },
+                onMounted = {
+                    timeoutController.start()
+                    armHealSentinel()
                 }
-
-                val currentLifecycle = ServiceLifecycleOwner().also {
-                    lifecycleOwner = it
-                    it.start()
-                }
-
-                val composeView = ComposeView(this).apply {
-                    setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnLifecycleDestroyed(currentLifecycle))
-                    setViewTreeLifecycleOwner(currentLifecycle)
-                    setViewTreeViewModelStoreOwner(currentLifecycle)
-                    setViewTreeSavedStateRegistryOwner(currentLifecycle)
-
-                    setContent {
-                        FocusGuardTheme {
-                            BootCoverContent(
-                                isFallback = isFallbackState,
-                                onOpenAccessibilitySettings = {
-                                    openAccessibilitySettings()
-                                }
-                            )
-                        }
-                    }
-                }
-
-                val params = WindowManager.LayoutParams().apply {
-                    type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                    format = PixelFormat.TRANSLUCENT
-                    @Suppress("DEPRECATION")
-                    flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                            WindowManager.LayoutParams.FLAG_FULLSCREEN or
-                            WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
-                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                    width = WindowManager.LayoutParams.MATCH_PARENT
-                    height = WindowManager.LayoutParams.MATCH_PARENT
-                    gravity = Gravity.CENTER
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        layoutInDisplayCutoutMode =
-                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                    }
-                }
-
-                wm.addView(composeView, params)
-                overlayView = composeView
-                isOverlayAttached = true
-                Log.i(TAG, "Boot cover overlay successfully attached to WindowManager.")
-
-                // RACE CONDITION CHECK 3: If accessibility connected during addView, remove immediately!
-                if (FocusGuardAccessibilityService.isServiceRunning) {
-                    Log.i(TAG, "Accessibility Service connected during view attachment. Removing overlay.")
-                    dismissInternal()
-                    return@post
-                }
-
-                // Schedule 35-second fallback transition
-                scheduleFallbackTimer()
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to mount boot cover overlay: ${e.message}", e)
-                dismissInternal()
-            }
+            )
         }
     }
 
-    private fun scheduleFallbackTimer() {
-        fallbackRunnable?.let { mainHandler.removeCallbacks(it) }
-        val fallbackTask = Runnable {
-            if (!FocusGuardAccessibilityService.isServiceRunning && overlayView != null) {
-                Log.w(TAG, "35-second boot grace period elapsed without Accessibility connection -> displaying fallback action screen.")
-                isFallbackState = true
-            }
+    /**
+     * The cover is only a stop-gap: while it holds the screen the sentinel keeps trying to bring the
+     * Accessibility binding back and releases the cover after the first rules snapshot is published.
+     */
+    private fun armHealSentinel() {
+        if (sentinel == null) {
+            sentinel = BootCoverSentinel(
+                context = applicationContext,
+                handler = mainHandler,
+                startupReadiness = startupReadiness,
+                onShieldNoLongerNeeded = { dismissInternal() }
+            )
         }
-        fallbackRunnable = fallbackTask
-        mainHandler.postDelayed(fallbackTask, 35_000L)
+        sentinel?.start()
     }
 
     private fun openAccessibilitySettings() {
@@ -228,22 +178,12 @@ class BootCoverService : Service() {
 
     fun dismissInternal() {
         mainHandler.post {
-            fallbackRunnable?.let { mainHandler.removeCallbacks(it) }
-            fallbackRunnable = null
+            sentinel?.stop()
+            sentinel = null
 
-            overlayView?.let { view ->
-                try {
-                    windowManager?.removeView(view)
-                    Log.i(TAG, "Boot cover overlay removed from WindowManager.")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error removing boot cover overlay: ${e.message}")
-                }
-            }
-            overlayView = null
-            isOverlayAttached = false
+            timeoutController.stop()
 
-            lifecycleOwner?.stop()
-            lifecycleOwner = null
+            overlayManager.dismissOverlay()
 
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -262,6 +202,7 @@ class BootCoverService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        readinessScope.cancel()
         dismissInternal()
         if (activeInstance?.get() === this) {
             activeInstance = null
@@ -308,29 +249,30 @@ class BootCoverService : Service() {
     }
 
     companion object {
-        private const val TAG = "BootCoverService"
-        private const val CHANNEL_ID = "focusguard_boot_shield_channel"
-        private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_BOOT_COVER_SHIELD
-
         const val ACTION_DISMISS = "com.focusguard.app.service.BootCoverService.ACTION_DISMISS"
-
-        @Volatile
-        var isOverlayAttached: Boolean = false
-            private set
 
         @Volatile
         private var activeInstance: WeakReference<BootCoverService>? = null
 
         /**
-         * Starts the BootCoverService if Accessibility is not yet running and overlay permission is granted.
+         * Starts the BootCoverService while startup readiness is incomplete and overlay permission is granted.
          */
         fun start(context: Context) {
-            if (FocusGuardAccessibilityService.isServiceRunning) {
-                Log.d(TAG, "start: FocusGuardAccessibilityService is already running. Skipping BootCoverService.")
-                return
+            val isProtectionReady = try {
+                EntryPointAccessors.fromApplication(
+                    context.applicationContext,
+                    BootCoverEntryPoint::class.java
+                ).startupReadiness().isReady()
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to read startup readiness before starting cover: ${e.message}", e)
+                false
             }
-            if (!Settings.canDrawOverlays(context)) {
-                Log.w(TAG, "start: SYSTEM_ALERT_WINDOW permission not granted. Skipping BootCoverService.")
+            if (!BootCoverPolicy.shouldStartService(
+                    isProtectionReady = isProtectionReady,
+                    canDrawOverlays = Settings.canDrawOverlays(context)
+                )
+            ) {
+                Log.d(TAG, "start: protection ready or SYSTEM_ALERT_WINDOW missing. Skipping BootCoverService.")
                 return
             }
 
@@ -361,4 +303,3 @@ class BootCoverService : Service() {
         }
     }
 }
-

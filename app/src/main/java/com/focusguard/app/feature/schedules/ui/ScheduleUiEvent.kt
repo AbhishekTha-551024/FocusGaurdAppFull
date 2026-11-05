@@ -1,7 +1,7 @@
 package com.focusguard.app.feature.schedules.ui
 
 import android.content.Context
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.ScheduleEntity
 
 sealed interface ScheduleUiEvent {

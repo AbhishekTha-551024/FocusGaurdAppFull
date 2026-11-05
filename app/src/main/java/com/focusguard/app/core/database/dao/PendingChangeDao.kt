@@ -2,7 +2,7 @@ package com.focusguard.app.core.database.dao
 
 import androidx.room.*
 import com.focusguard.app.core.database.entity.PendingChangeEntity
-import com.focusguard.app.core.database.entity.PendingStatus
+import com.focusguard.app.core.model.PendingStatus
 import kotlinx.coroutines.flow.Flow
 
 @Dao

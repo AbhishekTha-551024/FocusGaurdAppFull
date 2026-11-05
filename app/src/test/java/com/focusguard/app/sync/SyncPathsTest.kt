@@ -22,6 +22,7 @@ class SyncPathsTest {
         assertEquals("time_limits", SyncPaths.COLLECTION_TIME_LIMITS)
         assertEquals("accountability", SyncPaths.COLLECTION_ACCOUNTABILITY)
         assertEquals("settings", SyncPaths.DOCUMENT_ACCOUNTABILITY_SETTINGS)
+        assertEquals("device_locks", SyncPaths.COLLECTION_DEVICE_LOCKS)
     }
 
     @Test
@@ -60,6 +61,13 @@ class SyncPathsTest {
         assertEquals("challengeType", SyncPaths.FIELD_CHALLENGE_TYPE)
         assertEquals("commitmentSentence", SyncPaths.FIELD_COMMITMENT_SENTENCE)
         assertEquals("timeDelayHours", SyncPaths.FIELD_TIME_DELAY_HOURS)
+
+        // Device Lock (device_locks/{deviceId}) — the reinstall-restore wire schema
+        assertEquals("deviceId", SyncPaths.FIELD_DEVICE_ID)
+        assertEquals("isTimedLockActive", SyncPaths.FIELD_IS_TIMED_LOCK_ACTIVE)
+        assertEquals("days", SyncPaths.FIELD_LOCK_DAYS)
+        assertEquals("expiryWallMs", SyncPaths.FIELD_EXPIRY_WALL_MS)
+        assertEquals("recordedAtMs", SyncPaths.FIELD_RECORDED_AT_MS)
     }
 }
 

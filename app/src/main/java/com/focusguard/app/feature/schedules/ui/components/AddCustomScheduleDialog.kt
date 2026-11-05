@@ -60,7 +60,8 @@ fun AddCustomScheduleDialog(
     }
     val isTitleError = titleValidation is ValidationResult.Invalid
     val titleErrorMessage = (titleValidation as? ValidationResult.Invalid)?.error?.message
-    val isValid = (titleValidation is ValidationResult.Valid) && daysMask > 0
+    val hasValidWindow = startMinuteOfDay != endMinuteOfDay
+    val isValid = (titleValidation is ValidationResult.Valid) && daysMask > 0 && hasValidWindow
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -137,6 +138,13 @@ fun AddCustomScheduleDialog(
                         TimePickerDialog(context, { _, h, m -> endMinuteOfDay = h * 60 + m }, endMinuteOfDay / 60, endMinuteOfDay % 60, false).show()
                     }
                 )
+                if (!hasValidWindow) {
+                    Text(
+                        "Start and end times must be different.",
+                        color = Rose400,
+                        fontSize = 11.5.sp
+                    )
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

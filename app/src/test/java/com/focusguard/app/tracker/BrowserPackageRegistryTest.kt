@@ -39,5 +39,33 @@ class BrowserPackageRegistryTest {
             }
         }
     }
+
+    @Test
+    fun testLinkHandlerAppsAreNotQuarantinedAsBrowsers() {
+        // Apps that resolve http(s) VIEW intents (Custom Tabs hosts, deep links) must never be
+        // quarantined: they do not ship a browser surface of their own.
+        assertFalse(registry.isUnsupportedBrowser("com.google.android.gm"))
+        assertFalse(registry.isUnsupportedBrowser("com.facebook.katana"))
+        assertFalse(registry.isUnsupportedBrowser("com.whatsapp"))
+        assertFalse(registry.isUnsupportedBrowser("com.google.android.apps.messaging"))
+        assertFalse(registry.isUnsupportedBrowser("com.focusguard.app"))
+    }
+
+    @Test
+    fun testKnownAndUnknownBrowsersStayQuarantined() {
+        assertTrue(registry.isUnsupportedBrowser("org.torproject.torbrowser"))
+        assertTrue(registry.isUnsupportedBrowser("com.kiwibrowser.browser"))
+        assertTrue(registry.isUnsupportedBrowser("com.some.vendor.quickbrowser"))
+    }
+
+    @Test
+    fun testVerifiedBrowsersAreNeverQuarantined() {
+        for (pkg in BrowserPackageRegistry.VERIFIED_SUPPORTED_BROWSERS) {
+            assertFalse(
+                "Verified browser must not be quarantined: $pkg",
+                registry.isUnsupportedBrowser(pkg)
+            )
+        }
+    }
 }
 

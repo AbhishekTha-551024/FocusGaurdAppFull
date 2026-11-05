@@ -103,10 +103,11 @@ class SupportCodeRepositoryImpl @Inject constructor(
     private suspend fun applySupportAction(actionCode: String, targetPayload: String): Boolean =
         when (actionCode) {
             SupportCodeEngine.ACTION_DISABLE_UNINSTALL -> {
-                protectionRepository.setUninstallProtectionEnabled(false)
+                // Owner-level escape: the support code is the authorization.
+                protectionRepository.setUninstallProtectionEnabled(false, challengeAuthorized = true)
                 val adminRemoved = FocusGuardDeviceAdminReceiver.deactivateDeviceAdmin(context)
                 Log.i(TAG, "ACTION_DISABLE_UNINSTALL: Device Admin deactivated=$adminRemoved")
-                true
+                adminRemoved
             }
             SupportCodeEngine.ACTION_RESET_CHALLENGE -> {
                 challengeRepository.setChallengeActive(false)
@@ -163,7 +164,7 @@ class SupportCodeRepositoryImpl @Inject constructor(
                 }
             }
             SupportCodeEngine.ACTION_FULL_RESET -> {
-                protectionRepository.setUninstallProtectionEnabled(false)
+                protectionRepository.setUninstallProtectionEnabled(false, challengeAuthorized = true)
                 val adminRemoved = FocusGuardDeviceAdminReceiver.deactivateDeviceAdmin(context)
                 Log.i(TAG, "ACTION_FULL_RESET: Device Admin deactivated=$adminRemoved")
                 distractionFeedRepository.setShortsReelsBlockEnabled(false)
@@ -182,9 +183,8 @@ class SupportCodeRepositoryImpl @Inject constructor(
                 allLimitPkgs.forEach { timeLimitRepository.removeTimeLimitDirect(it) }
                 Log.i(TAG, "ACTION_FULL_RESET: cleared ${allBlocked.size} blocked apps, " +
                     "keywords, $allSchedulesCount schedules, ${allLimitPkgs.size} time limits.")
-                true
+                adminRemoved
             }
             else -> false
         }
 }
-

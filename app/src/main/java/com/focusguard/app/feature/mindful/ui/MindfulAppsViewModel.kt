@@ -3,17 +3,14 @@ package com.focusguard.app.feature.mindful.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
-import com.focusguard.app.core.database.entity.MindfulIntentLogEntity
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.ActiveChallengeState
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.data.repository.FocusGuardRepository
-import com.focusguard.app.feature.mindful.domain.repository.MindfulAppsRepository
 import com.focusguard.app.feature.mindful.domain.usecase.ActivateMindfulChallengeUseCase
 import com.focusguard.app.feature.mindful.domain.usecase.GetMindfulAppsUseCase
 import com.focusguard.app.feature.mindful.domain.usecase.ToggleMindfulAppUseCase
-import com.focusguard.app.feature.mindful.domain.usecase.UpdateMindfulAllowanceUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -24,24 +21,14 @@ import javax.inject.Inject
 class MindfulAppsViewModel @Inject constructor(
     private val getMindfulAppsUseCase: GetMindfulAppsUseCase,
     private val toggleMindfulAppUseCase: ToggleMindfulAppUseCase,
-    private val updateMindfulAllowanceUseCase: UpdateMindfulAllowanceUseCase,
     private val activateMindfulChallengeUseCase: ActivateMindfulChallengeUseCase,
-    private val mindfulAppsRepository: MindfulAppsRepository,
     private val focusGuardRepository: FocusGuardRepository
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
-    private val _showJournalDialog = MutableStateFlow(false)
     private val _activeChallenge = MutableStateFlow<ActiveChallengeState?>(null)
     private val _pendingAccountabilityApp = MutableStateFlow<AppInfo?>(null)
     private val _pendingConfirmAddApp = MutableStateFlow<AppInfo?>(null)
-
-    private data class StatsData(
-        val walkedAway: Int,
-        val consciousOpens: Int,
-        val logs: List<MindfulIntentLogEntity>,
-        val showJournal: Boolean
-    )
 
     private data class LocalMindfulState(
         val activeChallenge: ActiveChallengeState?,
@@ -62,7 +49,7 @@ class MindfulAppsViewModel @Inject constructor(
         getMindfulAppsUseCase.getMindfulApps(),
         _searchQuery
     ) { installedApps, mindfulEntities, query ->
-        val mindfulPkgMap = mindfulEntities.associate { it.packageName to it.defaultAllowanceMinutes }
+        val mindfulPackages = mindfulEntities.mapTo(mutableSetOf()) { it.packageName }
 
         val filteredApps = if (query.isBlank()) {
             installedApps
@@ -73,40 +60,25 @@ class MindfulAppsViewModel @Inject constructor(
             }
         }
 
-        val mindful = filteredApps.filter { mindfulPkgMap.containsKey(it.packageName) }
+        val mindful = filteredApps.filter { it.packageName in mindfulPackages }
             .sortedBy { it.appName.lowercase() }
 
-        val available = filteredApps.filter { !mindfulPkgMap.containsKey(it.packageName) }
+        val available = filteredApps.filter { it.packageName !in mindfulPackages }
             .sortedBy { it.appName.lowercase() }
 
-        Triple(mindful, available, mindfulPkgMap)
-    }
-
-    private val statsFlow = combine(
-        getMindfulAppsUseCase.getTodayWalkedAwayCount(),
-        getMindfulAppsUseCase.getTodayConsciousOpensCount(),
-        getMindfulAppsUseCase.getRecentIntentLogs(),
-        _showJournalDialog
-    ) { walkedAway, consciousOpens, logs, showJournal ->
-        StatsData(walkedAway, consciousOpens, logs, showJournal)
+        mindful to available
     }
 
     val uiState: StateFlow<MindfulAppsUiState> = combine(
         appsFlow,
-        statsFlow,
         localStateFlow,
         focusGuardRepository.challengeSettings
-    ) { (mindful, available, pkgMap), stats, local, challengeSettings ->
+    ) { (mindful, available), local, challengeSettings ->
         MindfulAppsUiState(
             isLoading = false,
             searchQuery = _searchQuery.value,
             mindfulApps = mindful,
             availableApps = available,
-            appAllowanceMap = pkgMap,
-            walkedAwayCount = stats.walkedAway,
-            consciousOpensCount = stats.consciousOpens,
-            recentLogs = stats.logs,
-            showJournalDialog = stats.showJournal,
             activeChallenge = local.activeChallenge,
             isChallengeActive = challengeSettings.isChallengeActive,
             challengeType = challengeSettings.type,
@@ -131,9 +103,6 @@ class MindfulAppsViewModel @Inject constructor(
             is MindfulAppsUiEvent.OnDismissAccountability -> onDismissAccountabilityRequired()
             is MindfulAppsUiEvent.OnChallengeSuccess -> onChallengeSuccess(event.context)
             is MindfulAppsUiEvent.OnCancelChallenge -> onCancelChallenge()
-            is MindfulAppsUiEvent.UpdateDefaultAllowance -> updateDefaultAllowance(event.packageName, event.minutes)
-            is MindfulAppsUiEvent.OpenJournalDialog -> openJournalDialog()
-            is MindfulAppsUiEvent.DismissJournalDialog -> dismissJournalDialog()
         }
     }
 
@@ -214,30 +183,4 @@ class MindfulAppsViewModel @Inject constructor(
         _activeChallenge.value = null
     }
 
-    fun updateDefaultAllowance(packageName: String, minutes: Int) {
-        val currentMinutes = uiState.value.appAllowanceMap[packageName] ?: 5
-        val appName = uiState.value.mindfulApps.find { it.packageName == packageName }?.appName ?: packageName
-
-        if (minutes > currentMinutes && uiState.value.isChallengeActive) {
-            _activeChallenge.value = ActiveChallengeState(
-                changeType = ChangeType.INCREASE_MINDFUL_ALLOWANCE,
-                targetId = packageName,
-                targetName = appName,
-                targetPayload = minutes.toString(),
-                description = "increase mindful allowance for $appName from ${currentMinutes}m to ${minutes}m"
-            )
-        } else {
-            viewModelScope.launch {
-                updateMindfulAllowanceUseCase(packageName, minutes)
-            }
-        }
-    }
-
-    fun openJournalDialog() {
-        _showJournalDialog.value = true
-    }
-
-    fun dismissJournalDialog() {
-        _showJournalDialog.value = false
-    }
 }

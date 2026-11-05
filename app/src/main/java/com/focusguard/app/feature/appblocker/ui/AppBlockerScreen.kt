@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -25,8 +24,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
+import com.focusguard.app.core.designsystem.theme.focusPageBackground
 import com.focusguard.app.feature.appblocker.ui.components.AppBlockerDialogHost
 import com.focusguard.app.feature.appblocker.ui.components.BlockedAppList
 import com.focusguard.app.ui.components.AppListSkeleton
@@ -59,7 +59,7 @@ fun AppBlockerScreen(
     var showDisclosureDialog by remember { mutableStateOf(false) }
 
     fun refreshPermissions() {
-        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
+        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityConfiguredInSettings(context)
         isOverlayGranted = Settings.canDrawOverlays(context)
     }
 
@@ -101,7 +101,7 @@ fun AppBlockerScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .background(Brush.verticalGradient(listOf(Navy900, Color(0xFF0B1F15), Navy900)))
+                    .focusPageBackground()
             ) {
                 if (uiState.isLoading) {
                     AppListSkeleton(count = 7)

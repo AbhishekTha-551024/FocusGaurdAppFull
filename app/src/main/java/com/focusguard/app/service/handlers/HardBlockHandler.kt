@@ -12,6 +12,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed interface HardBlockResult {
+    data object CallSurfaceAllowed : HardBlockResult
+
     data class Block(
         val blockType: OverlayBlockType,
         val reason: String,
@@ -41,6 +43,10 @@ class HardBlockHandler @Inject constructor(
         blockedPackages: Set<String>,
         getCachedAppLabel: (String) -> String
     ): HardBlockResult {
+        if (sessionBlockManager.isCriticalCallSurface(pkg)) {
+            return HardBlockResult.CallSurfaceAllowed
+        }
+
         val eventContext = EventContext(
             packageName = pkg,
             className = className,
@@ -55,12 +61,11 @@ class HardBlockHandler @Inject constructor(
         val scheduleBlock = if (activeSchedules.isNotEmpty()) {
             scheduleEvaluator.isBlockedBySchedule(
                 packageName = pkg,
-                schedules = activeSchedules,
-                isAppBlockedInBlocklist = isHardBlocked
+                schedules = activeSchedules
             )
         } else null
 
-        if ((isHardBlocked || isTimeLimitExceeded || scheduleBlock != null) && !sessionBlockManager.isAlwaysAllowedPackage(pkg)) {
+        if (isHardBlocked || isTimeLimitExceeded || scheduleBlock != null) {
             val appLabel = getCachedAppLabel(pkg)
             val isLimit = !isHardBlocked && isTimeLimitExceeded && scheduleBlock == null
             val isSched = scheduleBlock != null && !isHardBlocked
@@ -96,4 +101,3 @@ class HardBlockHandler @Inject constructor(
         return if (isHardBlocked) HardBlockResult.HardBlockedButAllowed else HardBlockResult.Clear
     }
 }
-

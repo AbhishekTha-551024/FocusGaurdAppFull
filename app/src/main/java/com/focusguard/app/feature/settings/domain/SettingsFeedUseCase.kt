@@ -2,7 +2,7 @@ package com.focusguard.app.feature.settings.domain
 
 import android.content.Context
 import com.focusguard.app.data.repository.FocusGuardRepository
-import com.focusguard.app.service.AdultContentVpnService
+import com.focusguard.app.service.vpn.AdultVpnController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,7 +31,7 @@ class SettingsFeedUseCase @Inject constructor(
             "unsupported_browsers" -> repository.setBlockUnsupportedBrowsersEnabled(false)
             "adult_content" -> {
                 repository.setAdultContentBlockEnabled(false)
-                AdultContentVpnService.stop(context)
+                AdultVpnController.disable(context)
             }
         }
     }
@@ -52,9 +52,19 @@ class SettingsFeedUseCase @Inject constructor(
             "unsupported_browsers" -> repository.setBlockUnsupportedBrowsersEnabled(true)
             "adult_content" -> {
                 repository.setAdultContentBlockEnabled(true)
-                AdultContentVpnService.start(context)
+                // Requires the one-time system VPN consent dialog; the tunnel is armed on resume.
+                AdultVpnController.enable(context)
             }
         }
+    }
+
+    /**
+     * Re-arms the DNS shield when the feature is ON but the tunnel is not established.
+     * Called on every app resume: this is what actually starts the shield after the user
+     * approves the system VPN consent dialog, and what heals a tunnel killed by the OS.
+     */
+    fun ensureAdultShieldRunning() {
+        AdultVpnController.ensureRunning(context, repository.isFastAdultContentBlockEnabled())
     }
 
     suspend fun setShortsReels(enable: Boolean) = repository.setShortsReelsBlockEnabled(enable)

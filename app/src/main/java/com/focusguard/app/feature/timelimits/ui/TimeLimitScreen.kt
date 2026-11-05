@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.feature.timelimits.ui.components.*
 import com.focusguard.app.ui.theme.FocusGuardTheme
@@ -78,9 +78,13 @@ fun TimeLimitScreen(
     var isOverlayGranted by remember { mutableStateOf(false) }
     var showPermissionsDialog by remember { mutableStateOf(false) }
     var showDisclosureDialog by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(uiState.errorMessage) {
+        uiState.errorMessage?.let { snackbarHostState.showSnackbar(it) }
+    }
 
     fun refreshPermissions() {
-        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
+        isAccessibilityEnabled = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityConfiguredInSettings(context)
         isOverlayGranted = Settings.canDrawOverlays(context)
         onRefreshPermissions()
     }
@@ -102,6 +106,7 @@ fun TimeLimitScreen(
 
     FocusGuardTheme {
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 TimeLimitTopAppBar(configuredCount = configuredApps.size)
             },

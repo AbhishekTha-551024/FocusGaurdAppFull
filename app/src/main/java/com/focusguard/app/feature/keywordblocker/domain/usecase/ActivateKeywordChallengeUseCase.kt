@@ -1,7 +1,7 @@
 package com.focusguard.app.feature.keywordblocker.domain.usecase
 
 import com.focusguard.app.core.common.result.AppResult
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.feature.keywordblocker.domain.repository.KeywordBlockerRepository
 import javax.inject.Inject
 

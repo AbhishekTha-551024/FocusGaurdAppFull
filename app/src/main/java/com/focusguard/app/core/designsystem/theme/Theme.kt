@@ -33,6 +33,11 @@ val White90      = Color(0xE6FFFFFF)  // Primary text
 val White60      = Color(0x99FFFFFF)  // Secondary text
 val White40      = Color(0x66FFFFFF)  // Tertiary text
 val ForestBorder = Color(0x2E22C55E)  // Subtle crisp emerald border
+val RecoverySurface = Color(0xFF0F172A)
+val RecoverySurfaceRaised = Color(0xFF1E293B)
+val RecoveryBorder = Color(0xFF334155)
+val RecoveryAccent = Color(0xFF06B6D4)
+val RecoveryMuted = Color(0xFF94A3B8)
 
 // Backward compatibility aliases
 val Navy950   = Forest950

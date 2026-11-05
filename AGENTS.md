@@ -4,7 +4,8 @@
 Android app (Kotlin, Compose, Hilt, Room, DataStore, Firebase). Accessibility-based focus blocker. Test device: Vivo V2355.
 
 ## Mode
-- Current mode: REFACTOR ONLY. No new features. ZERO behavior change.
+- Current mode: BUILD. New features are allowed. Every new behavior must still be justified, layered (ui -> domain -> data), covered by a unit test where it is pure logic, and verified before reporting.
+- Behavior changes are allowed but must be declared explicitly in the report ("behavior changed: yes" + what changed for the user).
 - Work on ONE phase/task at a time. Stop and report after it. Never continue to the next phase on your own.
 
 ## Workflow (every task)
@@ -27,7 +28,7 @@ Android app (Kotlin, Compose, Hilt, Room, DataStore, Firebase). Accessibility-ba
 10. Never delete a file without first showing a grep of its references.
 
 ## Protected invariants (never break)
-1. Overlay first, then HOME: mount the overlay, send HOME only after it is attached.
+1. Global block navigation: for eligible app blocks, send one BACK before mounting the overlay, then send HOME only after the overlay is attached. Do not send an additional automatic HOME on countdown dismissal; a deliberate tap on "Leave this app" remains a separate user action. Confirmed FocusGuard launcher protection follows the same BACK -> overlay -> HOME order; unknown/other launcher targets remain untouched. System Settings/installer tamper keeps its existing tapjacking-safe BACK -> HOME -> delayed-overlay sequence. Deep Focus kiosk blocks must not send HOME because that would hide the session lock.
 2. First check in event processing: skip our own package.
 3. Never run Room/DataStore queries on the accessibility thread. Use in-memory caches.
 4. Use SystemClock.elapsedRealtime() for timers and tamper checks.
@@ -45,5 +46,4 @@ Changes to service, launcher, overlay or handlers need a manual test on Vivo V23
 long-press FocusGuard -> overlay shows; long-press YouTube/WhatsApp -> normal menu, no overlay.
 
 ## Logging tags
-FG:Service, FG:Launcher, FG:Settings, FG:Installer, FG:Keys, FG:TargetApp, FG:Reels, FG:Keywords, FG:Mindful, FGBlockOverlay.
-
+FG:Service, FG:Launcher, FG:Settings, FG:Installer, FG:Keys, FG:TargetApp, FG:Reels, FG:Keywords, FG:Mindful, FG:Commitment, FGBlockOverlay.

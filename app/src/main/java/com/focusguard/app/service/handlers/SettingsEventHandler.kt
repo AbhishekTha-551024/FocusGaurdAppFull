@@ -4,11 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.focusguard.app.blockers.AntiClonerEngine
-import com.focusguard.app.blockers.SessionBlockManager
-import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.overlay.manager.OverlayBlockType
 import com.focusguard.app.service.FocusGuardAccessibilityService
+import com.focusguard.app.service.utils.TamperResponsePolicy
 import com.focusguard.app.utils.SafeNodeUtils
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,11 +24,10 @@ private const val TAG = "FG:Settings"
  */
 @Singleton
 class SettingsEventHandler @Inject constructor(
-    private val repository: FocusGuardRepository,
-    private val sessionBlockManager: SessionBlockManager
+    private val featureGuardHandler: SettingsFeatureGuardHandler
 ) {
     private var lastSettingsContentScanTimestamp: Long = 0L
-    private var lastA11yFocusGuardPageTimestamp: Long = 0L
+    private var lastSelfA11yContestTimestamp: Long = 0L
 
     fun isFocusGuardAppDetailsPage(rootNode: AccessibilityNodeInfo?): Boolean {
         if (rootNode == null) return false
@@ -67,7 +64,6 @@ class SettingsEventHandler @Inject constructor(
         protectionWanted: Boolean,
         isDeviceAdminCurrentlyActive: Boolean,
         nowRealtime: Long,
-        isOemScanWindowActive: () -> Boolean,
         getCachedAppLabel: (String) -> String,
         onHandleSecurityTamper: (sourcePackage: String, reason: String, targetName: String, blockType: OverlayBlockType, customToastMessage: String?) -> Unit
     ): Boolean {
@@ -87,69 +83,31 @@ class SettingsEventHandler @Inject constructor(
         }
 
         val screenText = SafeNodeUtils.extractScreenTextFast(rootNode)
+        val clickedControl = extractClickedControl(e)
+        val clickedAction = SettingsTamperPolicy.classifyClickedAction(
+            isClick = e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED,
+            clickedText = clickedControl.text,
+            checkedToggleClicked = clickedControl.checkedToggle
+        )
 
         // ── GUARD 4.1: ACCESSIBILITY SETTINGS DEACTIVATION TAMPER ──
         if (protectionWanted) {
             val isA11y = className.contains("Accessibility", ignoreCase = true) ||
                     SafeNodeUtils.hasText(screenText, "accessibility", "screen protection")
             val targetsFocusGuardInA11y = SafeNodeUtils.hasText(screenText, "focusguard", "com.focusguard.app")
-
-            if (isA11y && targetsFocusGuardInA11y && !isOemScanWindowActive()) {
-                lastA11yFocusGuardPageTimestamp = nowRealtime
-                Log.d(TAG, "A11y FocusGuard page stamped at $nowRealtime")
-            }
-
-            val isOnFocusGuardA11yPage = lastA11yFocusGuardPageTimestamp > 0L &&
-                    (nowRealtime - lastA11yFocusGuardPageTimestamp < 8_000L)
-
-            val clickedFocusGuard = (e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) &&
-                    (e.text.any { it.toString().contains("FocusGuard", ignoreCase = true) } ||
-                     e.contentDescription?.contains("FocusGuard", ignoreCase = true) == true ||
-                     (try { e.source } catch (_: Exception) { null })?.text?.toString()
-                         ?.contains("FocusGuard", ignoreCase = true) == true)
-
-            // Direct click on FocusGuard item in a11y list
-            if (isA11y && clickedFocusGuard) {
-                Log.w(TAG, "BLOCKING click on FocusGuard in Accessibility Settings! (cls: $className)")
-                lastA11yFocusGuardPageTimestamp = nowRealtime
-                onHandleSecurityTamper(
-                    pkg,
-                    "Direct Click on FocusGuard in Accessibility Settings",
-                    "Accessibility Settings",
-                    OverlayBlockType.SETTINGS_TAMPER,
-                    "🚫 FocusGuard accessibility service is protected. Complete the friction challenge in the app to modify."
+            if (SettingsTamperPolicy.shouldBlockAccessibilityDisable(
+                    isAccessibilityScreen = isA11y,
+                    targetsFocusGuard = targetsFocusGuardInA11y,
+                    action = clickedAction
                 )
-                return true
-            }
-
-            // Click while on FocusGuard's details page
-            if (isOnFocusGuardA11yPage && e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-                Log.w(TAG, "BLOCKING click on FocusGuard Accessibility details page! (cls: $className)")
-                onHandleSecurityTamper(
-                    pkg,
-                    "Interaction on FocusGuard Accessibility Page",
-                    "Accessibility Settings",
-                    OverlayBlockType.SETTINGS_TAMPER,
-                    "🚫 FocusGuard accessibility service is protected. Complete the friction challenge in the app to modify."
-                )
-                return true
-            }
-
-            // Window change into FocusGuard's a11y details page
-            val isFocusGuardA11yDetailsPage = isA11y && targetsFocusGuardInA11y && (
-                    SafeNodeUtils.hasText(screenText, "turn off", "stop", "use focusguard", "allow focusguard", "shortcut") ||
-                    className.contains("ToggleAccessibilityServicePreferenceFragment", ignoreCase = true) ||
-                    className.contains("AccessibilityServiceWarning", ignoreCase = true)
-            )
-
-            if (isFocusGuardA11yDetailsPage && !isOemScanWindowActive()) {
-                Log.w(TAG, "BLOCKING entry into FocusGuard Accessibility Details screen! (cls: $className)")
-                onHandleSecurityTamper(
-                    pkg,
-                    "FocusGuard Accessibility Details Screen Opened",
-                    "Accessibility Settings",
-                    OverlayBlockType.SETTINGS_TAMPER,
-                    "🚫 Disabling FocusGuard is restricted. Complete the friction challenge in the app."
+            ) {
+                Log.w(TAG, "BLOCKING FocusGuard Accessibility disable action (cls: $className)")
+                contestSelfA11yTamper(
+                    nowRealtime = nowRealtime,
+                    pkg = pkg,
+                    reason = "Disable FocusGuard in Accessibility Settings",
+                    customToastMessage = "🚫 FocusGuard accessibility service is protected. Complete the friction challenge in the app to modify.",
+                    onHandleSecurityTamper = onHandleSecurityTamper
                 )
                 return true
             }
@@ -158,35 +116,14 @@ class SettingsEventHandler @Inject constructor(
         // ── GUARD 4.2: DEVICE ADMIN DEACTIVATION TAMPER ──
         if (protectionWanted) {
             val isDeviceAdminScreen = className.contains("DeviceAdmin", ignoreCase = true) ||
-                    className.contains("VivoSubSettings", ignoreCase = true) ||
-                    className.contains("SubSettings", ignoreCase = true) ||
                     SafeNodeUtils.hasText(screenText, "device admin", "admin apps", "device administrators", "this administrator is active")
-            val isDeactivationScreen = SafeNodeUtils.hasText(
-                screenText,
-                "deactivate",
-                "remove",
-                "uninstall",
-                "turn off",
-                "disable this device admin"
-            )
             val targetsFocusGuardInAdmin = SafeNodeUtils.hasText(screenText, "focusguard", "com.focusguard.app")
-
-            val clickedFocusGuardOrDeactivate = (e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) &&
-                    (e.text.any { it.toString().contains("focusguard", ignoreCase = true) || it.toString().contains("deactivate", ignoreCase = true) } ||
-                     e.contentDescription?.contains("focusguard", ignoreCase = true) == true ||
-                     e.contentDescription?.contains("deactivate", ignoreCase = true) == true ||
-                     (try { e.source } catch (_: Exception) { null })?.text?.toString()?.contains("focusguard", ignoreCase = true) == true ||
-                     (try { e.source } catch (_: Exception) { null })?.text?.toString()?.contains("deactivate", ignoreCase = true) == true)
-
-            val isDirectDeactivateClick = (e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) && (
-                e.text.any { it.toString().contains("deactivate", ignoreCase = true) } ||
-                e.contentDescription?.contains("deactivate", ignoreCase = true) == true ||
-                (try { e.source } catch (_: Exception) { null })?.text?.toString()?.contains("deactivate", ignoreCase = true) == true
-            )
-
-            if (isDirectDeactivateClick ||
-                (isDeviceAdminScreen && (isDeactivationScreen || clickedFocusGuardOrDeactivate) && (targetsFocusGuardInAdmin || clickedFocusGuardOrDeactivate)) ||
-                (targetsFocusGuardInAdmin && isDeactivationScreen)) {
+            if (SettingsTamperPolicy.shouldBlockDeviceAdminDisable(
+                    isDeviceAdminScreen = isDeviceAdminScreen,
+                    targetsFocusGuard = targetsFocusGuardInAdmin,
+                    action = clickedAction
+                )
+            ) {
                 Log.w(TAG, "BLOCKING Device Admin tamper for FocusGuard! (cls: $className, event: ${e.eventType})")
                 onHandleSecurityTamper(
                     pkg,
@@ -201,120 +138,99 @@ class SettingsEventHandler @Inject constructor(
 
         // ── GUARD 4.3: APP INFO / FORCE STOP / CLEAR STORAGE TAMPER ──
         if (protectionWanted) {
-            val isDeactivationTamper = SafeNodeUtils.hasText(
-                screenText,
-                "deactivate",
-                "disable this device admin",
-                "device administrator"
-            ) || className.contains("DeviceAdmin", ignoreCase = true)
-
-            val targetsFocusGuardInAdmin = isDeactivationTamper && SafeNodeUtils.hasText(screenText, "focusguard", "com.focusguard.app")
-
-            val isAppDetailsScreen = className.contains("InstalledAppDetails", ignoreCase = true) ||
-                    className.contains("AppInfo", ignoreCase = true) ||
-                    className.contains("AppStorageSettings", ignoreCase = true) ||
-                    className.contains("ManageSpaceActivity", ignoreCase = true) ||
-                    className.contains("AppButtonsPreferenceController", ignoreCase = true) ||
-                    SafeNodeUtils.hasText(screenText, "force stop", "clear data", "clear storage", "manage space")
-
-            val isSpecificallyFocusGuardApp = isAppDetailsScreen && isFocusGuardAppDetailsPage(rootNode)
-
-            if (targetsFocusGuardInAdmin || isSpecificallyFocusGuardApp) {
-                val targetName = if (isDeactivationTamper) "Device Administrator" else "Security Settings"
-                val tamperBlockType = if (isDeactivationTamper) OverlayBlockType.SETTINGS_TAMPER else OverlayBlockType.UNINSTALL_ATTEMPT
-                Log.w(TAG, "BLOCKING settings tamper: $targetName")
+            val isSpecificallyFocusGuardApp = isFocusGuardAppDetailsPage(rootNode)
+            if (SettingsTamperPolicy.shouldBlockFocusGuardAppAction(
+                    isFocusGuardAppDetailsPage = isSpecificallyFocusGuardApp,
+                    action = clickedAction
+                )
+            ) {
+                Log.w(TAG, "BLOCKING destructive action on FocusGuard App Info page")
                 onHandleSecurityTamper(
                     pkg,
-                    "FocusGuard Tampering Detected in Settings [$targetName]",
-                    targetName,
-                    tamperBlockType,
+                    "FocusGuard destructive action blocked in Settings",
+                    "FocusGuard App Info",
+                    OverlayBlockType.UNINSTALL_ATTEMPT,
                     "🚫 Modifying FocusGuard settings or storage is restricted. Complete the friction challenge in the app."
                 )
                 return true
             }
         }
 
-        // ── GUARD 4.4: HIDE APPS, PRIVATE SPACE & STEALTH MODE IN SETTINGS ──
-        val isHideAppsSettings = className.contains("HideApp", ignoreCase = true) ||
-                className.contains("AppHide", ignoreCase = true) ||
-                className.contains("HiddenApp", ignoreCase = true) ||
-                className.contains("PrivateSpace", ignoreCase = true) ||
-                className.contains("AppHider", ignoreCase = true) ||
-                (rootNode != null && SafeNodeUtils.containsKeywords(
-                    rootNode,
-                    "Hide apps",
-                    "Hidden apps",
-                    "Hide app",
-                    "App hider",
-                    "Hide icons",
-                    "Private space",
-                    "Hide apps on Home and Apps screens",
-                    "Hide apps on Home",
-                    "App lock & hide",
-                    "App lock and hide",
-                    "App hiding",
-                    "Privacy and app encryption",
-                    "Hide desktop icons",
-                    "Secret apps",
-                    "Stealth mode"
-                ))
-
-        if ((protectionWanted || sessionBlockManager.isSessionCurrentlyActive()) && isHideAppsSettings) {
-            Log.w(TAG, "BLOCKING Hide Apps / Private Space tamper attempt in Settings ($pkg - $className)!")
-            onHandleSecurityTamper(
-                pkg,
-                "Hide Apps / Private Space Access Blocked in Settings",
-                "Hide Apps Protection",
-                OverlayBlockType.SETTINGS_TAMPER,
-                "🚫 Hiding apps is restricted to prevent bypassing FocusGuard protection."
+        if (featureGuardHandler.process(
+                rootNode = rootNode,
+                pkg = pkg,
+                className = className,
+                protectionWanted = protectionWanted,
+                getCachedAppLabel = getCachedAppLabel,
+                onHandleSecurityTamper = onHandleSecurityTamper
             )
+        ) {
             return true
-        }
-
-        // ── GUARD 4.5: OEM DUAL APPS / CLONER SETTINGS INTERCEPT ──
-        if (repository.isFastAntiCloningShieldEnabled()) {
-            val isProtectionActive = protectionWanted
-            val isSessionActive = sessionBlockManager.isSessionCurrentlyActive()
-            if (isProtectionActive || isSessionActive) {
-                val isVivoDoubleInstance = pkg == "com.vivo.doubleinstance" || className.contains("DoubleInstance", ignoreCase = true)
-                val isDualAppScreen = isVivoDoubleInstance || AntiClonerEngine.isDualAppsSettingsScreen(rootNode, className, pkg)
-                if (isDualAppScreen) {
-                    val appLabel = getCachedAppLabel(pkg)
-                    Log.w(TAG, "ANTI-CLONING INTERCEPT: OEM Dual Apps Settings blocked: $pkg ($appLabel)")
-                    onHandleSecurityTamper(
-                        pkg,
-                        "Dual Apps Settings Blocked in $appLabel",
-                        "App Cloning Prohibited",
-                        OverlayBlockType.SETTINGS_TAMPER,
-                        "🚫 App cloning and dual apps are prohibited while FocusGuard protection is active."
-                    )
-                    return true
-                }
-            }
-        }
-
-        // ── GUARD 4.6: PRIVATE DNS SETTINGS INTERCEPTION (Layer 3 — Adult Content Shield) ──
-        if (repository.isFastAdultContentBlockEnabled()) {
-            val isPrivateDnsScreen = when {
-                (pkg == "com.android.settings" || pkg.contains("settings", ignoreCase = true)) -> {
-                    className.contains("PrivateDns", ignoreCase = true) ||
-                    (rootNode != null && SafeNodeUtils.containsKeywords(rootNode, "Private DNS", "Private dns"))
-                }
-                else -> false
-            }
-            if (isPrivateDnsScreen) {
-                Log.w(TAG, "GUARD 4.6: Private DNS settings intercepted — adult content shield active")
-                onHandleSecurityTamper(
-                    pkg,
-                    "Private DNS Settings Blocked",
-                    "🔞 Adult Content Shield",
-                    OverlayBlockType.SETTINGS_TAMPER,
-                    "⛔ Changing Private DNS is blocked while the Adult Content Shield is active."
-                )
-                return true
-            }
         }
 
         return true
     }
+
+    private fun extractClickedControl(event: AccessibilityEvent): ClickedSettingsControl {
+        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) return ClickedSettingsControl("", false)
+        val source = try {
+            event.source
+        } catch (_: Exception) {
+            null
+        }
+        val text = buildString {
+            append(event.text.joinToString(" "))
+            append(' ')
+            append(event.contentDescription ?: "")
+            append(' ')
+            append(source?.text ?: "")
+            append(' ')
+            append(source?.contentDescription ?: "")
+            append(' ')
+            append(source?.viewIdResourceName ?: "")
+        }
+        val isCheckedToggle = source?.let { it.isCheckable && it.isChecked } == true
+        SafeNodeUtils.safeRecycle(source)
+        return ClickedSettingsControl(text, isCheckedToggle)
+    }
+
+    /**
+     * Runs the visible contest against an attempt on FocusGuard's own Accessibility Service, paced
+     * by [TamperResponsePolicy.isSelfA11yContestDue].
+     *
+     * Detection is unchanged: the caller consumes the event either way, so a paced-out repeat can
+     * never fall through to a milder Settings path. Pacing exists because the in-window response
+     * ([com.focusguard.app.service.utils.TamperResponse.HEAL_AND_COVER]) no longer navigates away:
+     * the user stays on the Accessibility details screen and its content stream keeps re-detecting
+     * the same attempt, so without pacing each of those events would be a Toast, a haptic, a
+     * secure-setting write and -- when the silent heal cannot be verified -- a fresh full-screen
+     * gate several times per second. What still happens during the debounce is the setting-level
+     * recovery (AccessibilityStateObserver, liveness probe), which is the layer that actually
+     * re-arms the toggle.
+     */
+    private fun contestSelfA11yTamper(
+        nowRealtime: Long,
+        pkg: String,
+        reason: String,
+        customToastMessage: String,
+        onHandleSecurityTamper: (sourcePackage: String, reason: String, targetName: String, blockType: OverlayBlockType, customToastMessage: String?) -> Unit
+    ) {
+        if (!TamperResponsePolicy.isSelfA11yContestDue(lastSelfA11yContestTimestamp, nowRealtime)) {
+            Log.d(TAG, "Self-a11y contest paced out for a repeat attempt [$reason]")
+            return
+        }
+        lastSelfA11yContestTimestamp = nowRealtime
+        onHandleSecurityTamper(
+            pkg,
+            reason,
+            TamperResponsePolicy.TARGET_ACCESSIBILITY_SETTINGS,
+            OverlayBlockType.SETTINGS_TAMPER,
+            customToastMessage
+        )
+    }
 }
+
+private data class ClickedSettingsControl(
+    val text: String,
+    val checkedToggle: Boolean
+)

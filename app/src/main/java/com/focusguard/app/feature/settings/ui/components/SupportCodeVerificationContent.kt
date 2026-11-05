@@ -1,12 +1,10 @@
 package com.focusguard.app.feature.settings.ui.components
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,15 +19,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focusguard.app.core.common.validator.InputValidator
 import com.focusguard.app.core.common.validator.ValidationResult
+import com.focusguard.app.core.designsystem.theme.RecoveryAccent
+import com.focusguard.app.core.designsystem.theme.RecoveryBorder
+import com.focusguard.app.core.designsystem.theme.RecoveryMuted
+import com.focusguard.app.core.designsystem.theme.RecoverySurfaceRaised
 import com.focusguard.app.security.SupportVerificationResult
 import kotlinx.coroutines.launch
 
-private val AccentCyan = Color(0xFF06B6D4)
 private val AccentGreen = Color(0xFF10B981)
 private val AccentRose = Color(0xFFF43F5E)
-private val SurfaceSlate = Color(0xFF1E293B)
-private val BorderSlate = Color(0xFF334155)
-private val TextMuted = Color(0xFF94A3B8)
 private val TextSoft = Color(0xFFCBD5E1)
 private const val PASSCODE_LENGTH = 6
 
@@ -42,8 +40,7 @@ private const val PASSCODE_LENGTH = 6
  * - [PasscodeLockCard]: shows the rate-limit lockout while [cooldownRemainingSeconds] > 0.
  * - [PasscodeInputCard]: digit-filtered entry, single verification per distinct code, and
  *   honest feedback for InvalidCode / AlreadyUsed / RateLimited.
- * - [VerificationSuccessCard]: describes the unlocked action and applies it, reporting the
- *   real result of the operation instead of assuming success.
+ * - [SupportCodeApplyCard]: describes the unlocked action and applies it.
  *
  * State rule: the parent dialog owns the verification result so that recompositions and the
  * countdown cannot drift apart from what the user is seeing.
@@ -72,7 +69,7 @@ fun SupportCodeVerificationContent(
 
         val success = verificationResult as? SupportVerificationResult.Success
         if (success != null) {
-            VerificationSuccessCard(
+            SupportCodeApplyCard(
                 success = success,
                 errorMessage = errorMessage,
                 onApplyAction = onApplyAction,
@@ -135,7 +132,7 @@ private fun PasscodeInputCard(
     // not burn a second wrong-attempt slot for the very same value.
     var attemptedCode by remember { mutableStateOf<String?>(null) }
 
-    fun submit(code: String) {
+    val submit: (String) -> Unit = { code ->
         attemptedCode = code
         when (val validation = InputValidator.validateSupportCode(code)) {
             is ValidationResult.Invalid -> onShowError(validation.error.message)
@@ -145,7 +142,7 @@ private fun PasscodeInputCard(
                 onVerificationResult(result)
                 when (result) {
                     is SupportVerificationResult.InvalidCode ->
-                        onShowError("Invalid code for this device and date. Re-check the Device ID with support.")
+                        onShowError("Invalid code for this device and date. Check the passcode and try again.")
                     is SupportVerificationResult.AlreadyUsed ->
                         onShowError("This code has already been used on this device. Ask support for a new one.")
                     is SupportVerificationResult.RateLimited -> onShowError(result.lockMessage())
@@ -178,12 +175,12 @@ private fun PasscodeInputCard(
             color = Color.White
         ),
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = AccentCyan,
-            unfocusedBorderColor = BorderSlate,
-            focusedLabelColor = AccentCyan,
-            unfocusedLabelColor = TextMuted,
-            focusedContainerColor = SurfaceSlate,
-            unfocusedContainerColor = SurfaceSlate
+            focusedBorderColor = RecoveryAccent,
+            unfocusedBorderColor = RecoveryBorder,
+            focusedLabelColor = RecoveryAccent,
+            unfocusedLabelColor = RecoveryMuted,
+            focusedContainerColor = RecoverySurfaceRaised,
+            unfocusedContainerColor = RecoverySurfaceRaised
         ),
         shape = RoundedCornerShape(12.dp)
     )
@@ -212,7 +209,7 @@ private fun PasscodeInputCard(
             }
         },
         enabled = inputCode.length == PASSCODE_LENGTH,
-        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+        colors = ButtonDefaults.buttonColors(containerColor = RecoveryAccent),
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -224,118 +221,5 @@ private fun PasscodeInputCard(
     }
 }
 
-@Composable
-private fun VerificationSuccessCard(
-    success: SupportVerificationResult.Success,
-    errorMessage: String?,
-    onApplyAction: suspend (SupportVerificationResult.Success) -> Boolean,
-    context: Context,
-    onDismiss: () -> Unit,
-    onFailure: (String) -> Unit
-) {
-    val scope = rememberCoroutineScope()
-    var isSubmitting by remember(success.codeFingerprint) { mutableStateOf(false) }
-
-    Card(
-        colors = CardDefaults.cardColors(containerColor = AccentGreen.copy(alpha = 0.12f)),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = AccentGreen,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Verified Support Code!",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = AccentGreen
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Action: ${success.actionName}",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White
-            )
-
-            if (success.targetPayload.isNotBlank()) {
-                Text(
-                    text = "Target: ${success.targetPayload}",
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = TextMuted
-                )
-            }
-
-            Text(
-                text = success.description,
-                fontSize = 12.sp,
-                color = TextSoft,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-
-            Text(
-                text = "This code can be applied once. Reusing it requires a new code from support.",
-                fontSize = 11.sp,
-                color = TextMuted,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-        }
-    }
-
-    errorMessage?.let { error ->
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(text = error, fontSize = 12.sp, color = AccentRose, textAlign = TextAlign.Center)
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    Button(
-        onClick = {
-            if (!isSubmitting) {
-                isSubmitting = true
-                scope.launch {
-                    val applied = runCatching { onApplyAction(success) }
-                        .getOrElse { throwable ->
-                            context.showToastFailure(success.actionName, throwable.message)
-                            isSubmitting = false
-                            return@launch
-                        }
-                    if (applied) {
-                        Toast.makeText(context, "${success.actionName} applied successfully!", Toast.LENGTH_LONG).show()
-                        onDismiss()
-                    } else {
-                        onFailure("${success.actionName} could not be applied. Nothing was changed — try again or contact support.")
-                        isSubmitting = false
-                    }
-                }
-            }
-        },
-        enabled = !isSubmitting,
-        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = if (isSubmitting) "Applying…" else "Confirm & Apply Unlock",
-            fontWeight = FontWeight.Bold,
-            color = Color.White
-        )
-    }
-}
-
 private fun SupportVerificationResult.RateLimited.lockMessage(): String =
     "Too many wrong attempts. Try again in $remainingMinutes minute(s)."
-
-private fun Context.showToastFailure(actionName: String, reason: String?) {
-    Toast.makeText(this, "$actionName failed: ${reason ?: "unknown error"}", Toast.LENGTH_LONG).show()
-}

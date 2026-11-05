@@ -42,12 +42,9 @@ class BlockTrigger(
     /**
      * Variant of [triggerBlock] used exclusively by [handleSecurityTamper].
      *
-     * Because [handleSecurityTamper] already sent GLOBAL_ACTION_HOME before mounting the
-     * overlay, the normal [forceCloseApp] inside [triggerBlock]'s onAttached callback must
-     * NOT send another HOME. This variant's onAttached callback only kills the background
-     * process of the source package (if non-system) -- no redundant HOME dispatch.
-     *
-     * FIX C5: Eliminates the double-HOME (flicker) on MIUI / ColorOS / FuntouchOS launchers.
+     * [handleSecurityTamper] already sent GLOBAL_ACTION_HOME before mounting the overlay, so
+     * nothing here dispatches another HOME. The overlay only cleans up the source package's
+     * background process (if non-system) and never redirects the user a second time.
      */
     fun triggerBlockWithHomeAlreadySent(
         sourcePackage: String,
@@ -76,9 +73,9 @@ class BlockTrigger(
             sourcePackage = sourcePackage,
             description = description,
             customMessage = customMessage,
-            // HOME was already sent before overlay mount, but we still want to send it
-            // again on dismiss so the user always lands on home when they click Close.
-            sendHomeOnDismiss = true,
+            // HOME was already dispatched by the tamper path. Do not dispatch a second one
+            // when the countdown ends -- the user must not be redirected again.
+            sendHomeOnDismiss = false,
             onAttached = {
                 // HOME is already live. Only clean up the background process for non-system pkgs
                 // to prevent a PiP window from the settings/installer appearing behind the overlay.
@@ -105,9 +102,9 @@ class BlockTrigger(
     }
 
     /**
-     * Main overlay block entry point.
-     *
-     * Invariant 1: Mount overlay first, send HOME only after overlay is attached.
+     * Main overlay block entry point. For eligible block types, BACK is sent before mounting the
+     * shield and HOME is sent only after attachment, so the blocked surface cannot immediately
+     * retrigger when reopened. System packages retain their dedicated safety handling.
      */
     fun triggerBlock(
         sourcePackage: String,
@@ -138,8 +135,22 @@ class BlockTrigger(
         val isSessionActiveSo = sessionBlockManager.isSessionCurrentlyActive()
         val isSystemPkg = PackageClassifier.isSystemOrLauncherPackage(sourcePackage, launcherDetector, isProtectionActiveSo, isSessionActiveSo)
 
-        // ── SEND HOME ON DISMISS: Always true for ALL block types ────────────────
-        val shouldSendHomeOnDismiss = true
+        // HOME is dispatched after the shield attaches for eligible block types. The overlay
+        // never dispatches another HOME when its countdown ends.
+        val shouldSendHomeOnDismiss = false
+
+        // BACK must reach the triggering surface before the overlay takes input focus.
+        val steppedBackBeforeOverlay =
+            shouldStepBackBeforeOverlaySurface(blockType) && windowActions.stepBackBeforeOverlay(sourcePackage)
+        if (steppedBackBeforeOverlay) {
+            Log.i(TAG, "Pre-overlay BACK sent so $sourcePackage will not resume the blocked screen")
+        }
+
+        val exitsToHome = shouldExitToHomeAfterAttach(blockType) && !isSystemPkg && !isLauncher
+        // A HOME redirect changes the foreground to the launcher. In that case the shield must
+        // finish its countdown over Home instead of the hold watcher releasing it early.
+        val holdWhileForeground =
+            shouldHoldWhileForeground(blockType, exitsToHome) && sourcePackage.isNotBlank()
 
         overlayManager.showOverlay(
             durationSeconds = duration,
@@ -149,14 +160,27 @@ class BlockTrigger(
             description = description,
             customMessage = customMessage,
             sendHomeOnDismiss = shouldSendHomeOnDismiss,
+            holdUntilForegroundChanges = holdWhileForeground,
             onAttached = {
-                // Invariant Rule 1: Attach overlay FIRST. forceCloseApp sends HOME while overlay is live on screen.
-                windowActions.forceCloseApp(sourcePackage)
+                if (exitsToHome) {
+                    windowActions.forceCloseApp(sourcePackage, sendBack = false)
+                } else if (!isSystemPkg) {
+                    try {
+                        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                        am?.killBackgroundProcesses(sourcePackage)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error killing bg process for $sourcePackage after overlay attach", e)
+                    }
+                }
             },
             onDismissed = {
                 val dismissTime = SystemClock.elapsedRealtime()
-                onUpdateLastOverlayDismiss(dismissTime, sourcePackage)
-                Log.i(TAG, "Overlay countdown ended -- $sourcePackage [isSystem=$isSystemPkg, sendHome=$shouldSendHomeOnDismiss]")
+                // Held shields are released when the user leaves the app, not by a countdown.
+                // Writing the dismiss cooldown there would let a fast re-open slip through.
+                if (!holdWhileForeground) {
+                    onUpdateLastOverlayDismiss(dismissTime, sourcePackage)
+                }
+                Log.i(TAG, "Overlay countdown ended -- $sourcePackage [isSystem=$isSystemPkg, sendHome=$shouldSendHomeOnDismiss, held=$holdWhileForeground]")
                 try {
                     // NEVER kill system settings or system packages! Only kill 3rd party apps!
                     if (!isSystemPkg) {
@@ -171,6 +195,31 @@ class BlockTrigger(
 
         scope.launch {
             repository.logEvent(EventType.APP_BLOCKED, "[$blockType] Target=$targetName | Pkg=$sourcePackage | $reason")
+        }
+    }
+
+    internal companion object {
+        internal fun shouldStepBackBeforeOverlaySurface(blockType: OverlayBlockType): Boolean = when (blockType) {
+            OverlayBlockType.SESSION_LOCK_BLOCK -> false
+            else -> true
+        }
+
+        internal fun shouldExitToHomeAfterAttach(blockType: OverlayBlockType): Boolean =
+            shouldStepBackBeforeOverlaySurface(blockType)
+
+        /**
+         * Block types whose shield must stay mounted while the blocked package is still in the
+         * foreground. Transient content/tamper shields keep their old timed auto-dismiss.
+         */
+        internal fun shouldHoldWhileForeground(
+            blockType: OverlayBlockType,
+            exitsToHome: Boolean
+        ): Boolean = !exitsToHome && when (blockType) {
+            OverlayBlockType.APP_BLOCK,
+            OverlayBlockType.TIME_LIMIT_BLOCK,
+            OverlayBlockType.SCHEDULE_BLOCK,
+            OverlayBlockType.CLONER_BLOCK -> true
+            else -> false
         }
     }
 }

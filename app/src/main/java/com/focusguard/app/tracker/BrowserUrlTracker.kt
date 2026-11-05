@@ -1,6 +1,5 @@
 package com.focusguard.app.tracker
 
-import android.content.Context
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import javax.inject.Inject
@@ -52,8 +51,8 @@ class BrowserUrlTracker @Inject constructor(
     fun isSupportedBrowser(pkg: String): Boolean =
         packageRegistry.isSupportedBrowser(pkg)
 
-    fun isUnsupportedBrowser(pkg: String, context: Context? = null): Boolean =
-        packageRegistry.isUnsupportedBrowser(pkg, context)
+    fun isUnsupportedBrowser(pkg: String): Boolean =
+        packageRegistry.isUnsupportedBrowser(pkg)
 
     fun isYouTubePackage(pkg: String): Boolean =
         packageRegistry.isYouTubePackage(pkg)

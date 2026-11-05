@@ -1,9 +1,10 @@
 package com.focusguard.app.feature.settings.ui
 
 import android.content.Context
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.ActiveChallengeState
+import com.focusguard.app.feature.settings.domain.ChallengeApplyResult
 import com.focusguard.app.feature.settings.domain.SettingsFeedUseCase
 import com.focusguard.app.feature.settings.domain.SettingsOverlayUseCase
 import com.focusguard.app.feature.settings.domain.SettingsProtectionUseCase
@@ -16,12 +17,16 @@ object SettingsChallengeHandler {
         feedUseCase: SettingsFeedUseCase,
         overlayUseCase: SettingsOverlayUseCase,
         protectionUseCase: SettingsProtectionUseCase
-    ) {
-        when (challenge.changeType) {
-            ChangeType.DISABLE_DISTRACTION_FEED -> feedUseCase.disableFeed(challenge.targetId)
+    ): ChallengeApplyResult {
+        return when (challenge.changeType) {
+            ChangeType.DISABLE_DISTRACTION_FEED -> {
+                feedUseCase.disableFeed(challenge.targetId)
+                ChallengeApplyResult.Applied
+            }
             ChangeType.LOWER_COUNTDOWN -> {
                 val targetSec = challenge.targetPayload?.toIntOrNull() ?: 5
                 overlayUseCase.setBlockCountdownSeconds(targetSec)
+                ChallengeApplyResult.Applied
             }
             else -> protectionUseCase.handleChallengeSuccess(challenge, context)
         }
@@ -68,17 +73,17 @@ object SettingsChallengeHandler {
     }
 
     fun createRemoveChallengeState(remainingDays: Long): ActiveChallengeState {
-        val desc = if (remainingDays > 0) {
-            "disable Sentence Typing Challenge ($remainingDays days remaining in timed lock) and remove friction barrier"
+        val lockStatus = if (remainingDays > 0) {
+            " Uninstall Protection remains active with $remainingDays days remaining."
         } else {
-            "disable Sentence Typing Challenge and remove friction barrier"
+            " Uninstall Protection and Device Admin remain unchanged."
         }
         return ActiveChallengeState(
             changeType = ChangeType.CHANGE_CHALLENGE_TYPE,
             targetId = "remove_challenge",
-            targetName = "Sentence Typing Challenge",
+            targetName = "Accountability Challenge",
             targetPayload = "REMOVE_CHALLENGE",
-            description = desc
+            description = "Remove the Friction challenge only.$lockStatus"
         )
     }
 

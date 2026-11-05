@@ -2,7 +2,7 @@ package com.focusguard.app.feature.settings.ui
 
 import android.content.Context
 import android.net.Uri
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 
 /**
  * UI Events for Settings Screen.

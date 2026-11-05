@@ -13,6 +13,10 @@ import javax.inject.Singleton
 @Singleton
 class DnsPacketCodec @Inject constructor() {
 
+    private companion object {
+        const val QTYPE_A = 1
+    }
+
     /**
      * Parses the QNAME from a DNS wire-format message.
      * Returns null if parsing fails.
@@ -53,12 +57,18 @@ class DnsPacketCodec @Inject constructor() {
      * return NXDOMAIN to force IPv4 path.
      */
     fun buildSafeSearchResponse(query: ByteArray, ips: List<InetAddress>): ByteArray {
+        val questionEnd = findQuestionEnd(query) ?: return buildNxDomainResponse(query)
+        // Only A queries can be redirected. AAAA (and every other type) get NXDOMAIN,
+        // otherwise the resolver could fall back to an unfiltered IPv6 address.
+        val qtype = ((query[questionEnd - 4].toInt() and 0xFF) shl 8) or
+                (query[questionEnd - 3].toInt() and 0xFF)
+        if (qtype != QTYPE_A) return buildNxDomainResponse(query)
+
         val ipv4s = ips.filterIsInstance<Inet4Address>()
         if (ipv4s.isEmpty()) return buildNxDomainResponse(query)
 
         val ip = ipv4s.first().address
         // Build: header (12) + question (copy from query) + answer (A record)
-        val questionEnd = findQuestionEnd(query) ?: return buildNxDomainResponse(query)
         val question = query.copyOfRange(12, questionEnd)
 
         val answer = ByteArray(16).apply {
@@ -81,6 +91,8 @@ class DnsPacketCodec @Inject constructor() {
         response[2] = 0x81.toByte() // QR=1 response
         response[3] = 0x80.toByte() // no error
         response[6] = 0x00; response[7] = 0x01 // ANCOUNT=1
+        response[8] = 0; response[9] = 0      // NSCOUNT=0
+        response[10] = 0; response[11] = 0    // ARCOUNT=0 (EDNS OPT is not copied into the body)
         System.arraycopy(question, 0, response, 12, question.size)
         System.arraycopy(answer, 0, response, 12 + question.size, answer.size)
         return response

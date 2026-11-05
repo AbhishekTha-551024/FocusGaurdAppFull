@@ -4,12 +4,13 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.model.ActiveChallengeState
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.data.repository.PermissionStatusRepository
 import com.focusguard.app.feature.auth.domain.repository.AuthRepository
+import com.focusguard.app.feature.settings.domain.ChallengeApplyResult
 import com.focusguard.app.feature.settings.domain.SettingsFeedUseCase
 import com.focusguard.app.feature.settings.domain.SettingsOverlayUseCase
 import com.focusguard.app.feature.settings.domain.SettingsPartnerUseCase
@@ -64,7 +65,12 @@ class SettingsViewModel @Inject constructor(
         _showUninstallConfirmDialog,
         _permissionsRequiredFeature
     ) { args: Array<Any?> ->
-        val (state, isTimedLockExpired) = SettingsUiStateBuilder.buildBaseState(args)
+        // The monotonic ledger has to vouch for the elapsed duration before this screen is allowed
+        // to disarm an expired lock; otherwise a clock move alone would erase protection on open.
+        val uptimeProved = repository.isFastTimedLockDurationElapsed()
+        val remainingUptimeMs = repository.fastTimedLockRemainingUptimeMs()
+        val (state, isTimedLockExpired) =
+            SettingsUiStateBuilder.buildBaseState(args, uptimeProved, remainingUptimeMs)
         if (isTimedLockExpired) viewModelScope.launch { repository.setUninstallProtectionEnabled(false) }
         state
     }
@@ -83,7 +89,7 @@ class SettingsViewModel @Inject constructor(
     }.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
-        SettingsUiState(
+        repository.getCurrentSettingsSnapshot().copy(
             deviceId = repository.getDeviceId(),
             supportCooldownSeconds = repository.getSupportCooldownRemainingSeconds(),
             permissionStatus = permissionStatusRepository.status.value
@@ -91,6 +97,9 @@ class SettingsViewModel @Inject constructor(
     )
 
     fun refreshPermissions() = permissionStatusRepository.refresh()
+
+    /** Re-arms the adult-content DNS shield on resume (consent may have just been granted). */
+    fun ensureAdultShieldRunning() = feedUseCase.ensureAdultShieldRunning()
     fun ensurePermissionsGranted(featureName: String): Boolean {
         val status = permissionStatusRepository.status.value
         if (!status.isAccessibilityGranted || !status.isOverlayGranted) {
@@ -163,7 +172,10 @@ class SettingsViewModel @Inject constructor(
             _showUninstallDurationDialog.value = true
         } else {
             val remainingDays = repository.getFastTimedLockRemainingDays()
-            if (uiState.value.isChallengeActive) {
+            // A running timed lock always demands the challenge, even when no challenge type is
+            // configured. Without this, the switch disarmed the lock immediately and the chosen
+            // days meant nothing.
+            if (uiState.value.isChallengeActive || remainingDays > 0) {
                 val desc = if (remainingDays > 0) {
                     "turn off Uninstall Protection ($remainingDays days remaining in timed lock)"
                 } else {
@@ -245,8 +257,16 @@ class SettingsViewModel @Inject constructor(
     fun onChallengeSuccess(context: Context) {
         val challenge = _activeChallenge.value ?: return
         viewModelScope.launch {
-            SettingsChallengeHandler.resolveChallengeSuccess(challenge, context, feedUseCase, overlayUseCase, protectionUseCase)
-            _activeChallenge.value = null
+            when (val result = SettingsChallengeHandler.resolveChallengeSuccess(
+                challenge, context, feedUseCase, overlayUseCase, protectionUseCase
+            )) {
+                ChallengeApplyResult.Applied -> _activeChallenge.value = null
+                is ChallengeApplyResult.Retryable -> {
+                    // Nothing changed, so the challenge stays open with the reason as its prompt: the
+                    // user fixes the cause (connection, partner) and confirms again from the same dialog.
+                    _activeChallenge.value = challenge.copy(description = result.message)
+                }
+            }
         }
     }
     fun cancelChallenge() { _activeChallenge.value = null }

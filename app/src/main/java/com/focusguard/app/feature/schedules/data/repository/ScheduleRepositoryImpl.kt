@@ -1,20 +1,24 @@
 package com.focusguard.app.feature.schedules.data.repository
 
+import android.util.Log
 import com.focusguard.app.core.common.result.AppError
 import com.focusguard.app.core.common.result.AppResult
 import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.dao.ScheduleDao
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.database.entity.ScheduleEntity
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
+import com.focusguard.app.core.startup.CeStorageGate
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
 import com.focusguard.app.feature.schedules.domain.repository.ScheduleRepository
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -23,12 +27,16 @@ import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val TAG = "ScheduleRepository"
+private const val CACHE_RETRY_DELAY_MS = 5_000L
+
 @Singleton
 class ScheduleRepositoryImpl @Inject constructor(
     private val scheduleDao: ScheduleDao,
     private val pendingChangeDao: PendingChangeDao,
     private val prefs: FocusGuardPreferences,
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase,
+    private val ceStorageGate: CeStorageGate,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : ScheduleRepository {
 
@@ -38,13 +46,21 @@ class ScheduleRepositoryImpl @Inject constructor(
 
     init {
         repoScope.launch {
-            try {
-                scheduleDao.watchEnabledSchedules().collect { list ->
-                    cachedActiveSchedules.clear()
-                    cachedActiveSchedules.addAll(list)
-                    prefs.updateSyncCounts(schedules = list.size)
+            ceStorageGate.awaitUnlocked()
+            while (true) {
+                try {
+                    scheduleDao.watchEnabledSchedules().collect { list ->
+                        cachedActiveSchedules.clear()
+                        cachedActiveSchedules.addAll(list)
+                        prefs.updateSyncCounts(schedules = list.size)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Enabled-schedule cache observer failed; retrying", e)
+                    delay(CACHE_RETRY_DELAY_MS)
                 }
-            } catch (_: Exception) {}
+            }
         }
     }
 

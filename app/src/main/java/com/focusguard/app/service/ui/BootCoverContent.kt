@@ -7,7 +7,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -21,48 +20,44 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.focusguard.app.ui.theme.Emerald400
-import com.focusguard.app.ui.theme.Emerald500
 import com.focusguard.app.ui.theme.Forest900
 import com.focusguard.app.ui.theme.Forest950
-import com.focusguard.app.ui.theme.Rose400
 import com.focusguard.app.ui.theme.White60
-import com.focusguard.app.ui.theme.White90
 
 /**
  * Full-screen Compose UI displayed during device startup cover shield.
- * Consumes all touches and provides an escape button if fallback timer expires.
+ * Consumes all touches, provides settings recovery, and emergency support code entry in all states.
  */
 @Composable
 internal fun BootCoverContent(
     isFallback: Boolean,
-    onOpenAccessibilitySettings: () -> Unit
+    isUserUnlocked: Boolean,
+    deviceId: String,
+    supportStatus: SupportUiStatus,
+    onOpenAccessibilitySettings: () -> Unit,
+    onSubmitSupportCode: (String) -> Unit
 ) {
+    var showSupportDialog by remember { mutableStateOf(false) }
+
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
@@ -74,7 +69,6 @@ internal fun BootCoverContent(
         label = "scale"
     )
 
-    // Full screen container that absorbs all touch events
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -101,192 +95,57 @@ internal fun BootCoverContent(
             verticalArrangement = Arrangement.Center
         ) {
             if (!isFallback) {
-                // NORMAL INITIALIZING STATE (< 35s)
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(110.dp)
-                        .scale(pulseScale)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(100.dp)
-                            .clip(CircleShape)
-                            .background(Emerald500.copy(alpha = 0.15f))
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(76.dp)
-                            .clip(CircleShape)
-                            .background(Emerald500.copy(alpha = 0.25f))
-                            .border(2.dp, Emerald500.copy(alpha = 0.6f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = "Securing Device",
-                            tint = Emerald400,
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(28.dp))
-
-                Surface(
-                    color = Emerald500.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Emerald500.copy(alpha = 0.35f))
-                ) {
-                    Text(
-                        text = "BOOT VERIFICATION ACTIVE",
-                        color = Emerald400,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.2.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Text(
-                    text = "FocusGuard Shield",
-                    color = White90,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Securing your device after restart...\nStarting protection services.",
-                    color = White60,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                CircularProgressIndicator(
-                    color = Emerald500,
-                    strokeWidth = 3.dp,
-                    modifier = Modifier.size(36.dp)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Please wait",
-                    color = White60.copy(alpha = 0.6f),
-                    fontSize = 12.sp,
-                    letterSpacing = 0.8.sp
-                )
+                BootCoverInitializingSection(pulseScale = pulseScale)
             } else {
-                // FALLBACK STATE (>= 35s): Accessibility has not connected
-                // Condition 4: User-friendly message explaining why and action needed
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(110.dp)
-                        .scale(pulseScale)
+                BootCoverFallbackSection(
+                    pulseScale = pulseScale,
+                    onOpenAccessibilitySettings = onOpenAccessibilitySettings
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Condition: Button shown in ALL states (initializing and fallback)
+            OutlinedButton(
+                onClick = { showSupportDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = White60
+                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, White60.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(100.dp)
-                            .clip(CircleShape)
-                            .background(Rose400.copy(alpha = 0.15f))
+                    Icon(
+                        imageVector = Icons.Outlined.Key,
+                        contentDescription = "Support Code",
+                        modifier = Modifier.size(18.dp),
+                        tint = White60
                     )
-                    Box(
-                        modifier = Modifier
-                            .size(76.dp)
-                            .clip(CircleShape)
-                            .background(Rose400.copy(alpha = 0.25f))
-                            .border(2.dp, Rose400.copy(alpha = 0.6f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Action Required",
-                            tint = Rose400,
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Surface(
-                    color = Rose400.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Rose400.copy(alpha = 0.4f))
-                ) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "ACTION REQUIRED",
-                        color = Rose400,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.2.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        text = "ENTER SUPPORT CODE",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        letterSpacing = 0.5.sp
                     )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Turn On Accessibility",
-                    color = White90,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Accessibility service has not connected after restart. Tap the button below to restore your protection shield.",
-                    color = White60,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(28.dp))
-
-                // Condition 5: Working button to launch settings so user is never trapped
-                Button(
-                    onClick = onOpenAccessibilitySettings,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Emerald500,
-                        contentColor = Forest950
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "TURN ON ACCESSIBILITY",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            letterSpacing = 0.5.sp
-                        )
-                    }
                 }
             }
+        }
+
+        if (showSupportDialog) {
+            BootCoverSupportDialog(
+                isUserUnlocked = isUserUnlocked,
+                deviceId = deviceId,
+                status = supportStatus,
+                onSubmitCode = onSubmitSupportCode,
+                onDismiss = { showSupportDialog = false }
+            )
         }
     }
 }

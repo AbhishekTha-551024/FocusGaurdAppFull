@@ -11,7 +11,7 @@ class OverlayPreferences @Inject constructor(
     private val core: PreferencesCore
 ) {
     private val dataStore = core.dataStore
-    private val syncPrefs = core.syncPrefs
+    private val syncPrefs get() = core.syncPrefs
 
     val overlayWallpaperPath: Flow<String> = dataStore.data.map {
         it[PreferenceKeys.OVERLAY_WALLPAPER_PATH] ?: ""

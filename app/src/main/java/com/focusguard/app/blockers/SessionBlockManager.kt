@@ -1,11 +1,8 @@
 package com.focusguard.app.blockers
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioManager
 import android.os.SystemClock
-import android.provider.Telephony
-import android.telecom.TelecomManager
 import android.util.Log
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -41,9 +38,15 @@ class SessionBlockManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SessionBlockManager"
+
+        /** Kept as a delegating alias so existing tests and call sites stay unchanged. */
+        internal fun isCallSurfaceName(pkg: String): Boolean =
+            SessionAllowlist.isCallSurfaceName(pkg)
     }
 
     private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+    @Volatile
+    private var systemCallPackages = SessionAllowlist.resolveSystemCallPackages(context)
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
@@ -128,58 +131,39 @@ class SessionBlockManager @Inject constructor(
         return true
     }
 
-    fun isTamperOrSettingsPackage(pkg: String): Boolean {
-        val p = pkg.lowercase()
-        if (p == "com.android.settings" || p.endsWith(".settings") || p.contains(".settings.")) return true
-        if (p == "com.android.vending") return true
-        return p.contains("packageinstaller") || p.contains("safecenter") || p.contains("securitycenter")
-    }
+    fun isTamperOrSettingsPackage(pkg: String): Boolean =
+        SessionAllowlist.isTamperOrSettingsPackage(pkg)
 
-    fun isAlwaysAllowedPackage(pkg: String): Boolean {
-        // FocusGuard Self-package (Invariant Rule 2)
-        if (pkg == context.packageName || pkg.startsWith("com.focusguard.app")) return true
-        if (pkg == "com.android.systemui") return true
-
-        // Phone Dialer / In-Call UI
-        if (pkg.contains("dialer") || pkg.contains("incallui") || pkg.contains("telecom") || pkg.contains("phone")) return true
-
-        // Truecaller & Popular Caller ID / Calling Apps (Never block calls)
-        if (pkg.contains("truecaller") || pkg == "com.callapp.contacts" || pkg == "com.eycon.android" ||
-            pkg == "com.syncme.syncmeapp" || pkg.contains("callerid") || pkg == "gogolook.callgogolook2" ||
-            pkg == "com.simplemobiletools.dialer"
-        ) return true
-
-        // Default Phone App
-        try {
-            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
-            val defaultDialer = telecomManager?.defaultDialerPackage
-            if (defaultDialer != null && pkg == defaultDialer.lowercase()) return true
-        } catch (e: Exception) {
-            Log.d(TAG, "Default dialer check error: ${e.message}")
-        }
-
-        // If phone is actively ringing or on call, NEVER block whatever app is handling the call
-        if (isInPhoneCall()) return true
-
-        // Default SMS App
-        try {
-            val defaultSms = Telephony.Sms.getDefaultSmsPackage(context)
-            if (defaultSms != null && pkg == defaultSms.lowercase()) return true
-        } catch (e: Exception) {
-            Log.d(TAG, "Default SMS check error: ${e.message}")
-        }
-
-        // Clock / Alarm
-        if (pkg.contains("deskclock") || pkg.contains("alarm") || pkg.contains("google.android.deskclock")) return true
-
-        // Emergency alerts & SIM toolkit
-        return pkg.contains("cellbroadcastreceiver") || pkg.contains("stk")
-    }
+    fun isAlwaysAllowedPackage(pkg: String): Boolean =
+        SessionAllowlist.isAlwaysAllowedPackage(
+            pkg = pkg,
+            selfPackage = context.packageName,
+            defaultDialerPackage = systemCallPackages.defaultDialerPackage,
+            defaultSmsPackage = systemCallPackages.defaultSmsPackage,
+            voipCallInProgress = SessionAllowlist.isKnownVoipCallPackage(pkg) && isInPhoneCall()
+        )
 
     /**
-     * Detects if the device is currently ringing or in an active phone call
-     * using the system AudioManager mode (zero permissions required, 100% reliable).
+     * Narrow allowlist used to gate the user's own blocklist, time limits and schedules.
+     * See [SessionAllowlist.isCriticalCallSurface] for the rationale.
      */
+    fun isCriticalCallSurface(pkg: String): Boolean {
+        val isVoipCallPackage = SessionAllowlist.isKnownVoipCallPackage(pkg)
+        return SessionAllowlist.isCriticalCallSurface(
+            pkg = pkg,
+            inPhoneCall = isVoipCallPackage && isInPhoneCall(),
+            defaultDialerPackage = systemCallPackages.defaultDialerPackage
+        )
+    }
+
+    fun isPermanentCallSurface(pkg: String): Boolean =
+        SessionAllowlist.isCriticalCallSurface(
+            pkg = pkg,
+            inPhoneCall = false,
+            defaultDialerPackage = systemCallPackages.defaultDialerPackage
+        )
+
+    /** Uses AudioManager mode only to exempt a known VoIP app during active communication. */
     fun isInPhoneCall(): Boolean {
         return try {
             val mode = audioManager?.mode ?: AudioManager.MODE_NORMAL
@@ -222,6 +206,7 @@ class SessionBlockManager @Inject constructor(
     }
 
     fun startSession(durationMinutes: Int, packedApps: Set<String>) {
+        systemCallPackages = SessionAllowlist.resolveSystemCallPackages(context)
         val durationMs = durationMinutes * 60 * 1000L
         val end = System.currentTimeMillis() + durationMs
         val endReal = SystemClock.elapsedRealtime() + durationMs

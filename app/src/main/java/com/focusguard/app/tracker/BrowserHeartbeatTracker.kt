@@ -5,6 +5,7 @@ import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.focusguard.app.blockers.KeywordBlocker
+import com.focusguard.app.data.repository.isShortFormContentBlocked
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -81,13 +82,7 @@ class BrowserHeartbeatTracker @Inject constructor(
 
                 try {
                     // 0. Instant YouTube Shorts & Reels Detection during active playback
-                    val isPlatformBlocked = when (packageName) {
-                        com.focusguard.app.blockers.ReelBlocker.INSTAGRAM_PACKAGE -> repository.isFastInstagramReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        com.focusguard.app.blockers.ReelBlocker.FACEBOOK_PACKAGE,
-                        com.focusguard.app.blockers.ReelBlocker.FACEBOOK_LITE_PACKAGE -> repository.isFastFacebookReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        com.focusguard.app.blockers.ReelBlocker.YOUTUBE_PACKAGE -> repository.isFastYouTubeShortsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        else -> repository.isFastShortsReelsBlockEnabled()
-                    }
+                    val isPlatformBlocked = repository.isShortFormContentBlocked(packageName)
                     if (reelBlocker.isTargetPackage(packageName) && isPlatformBlocked) {
                         val isShortsOrReels = reelBlocker.isReelsOrShortsDetected(
                             e = null,

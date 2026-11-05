@@ -4,8 +4,8 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.focusguard.app.core.common.result.AppResult
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.feature.keywordblocker.domain.model.BlockedKeyword
 import com.focusguard.app.feature.keywordblocker.domain.repository.KeywordBlockerRepository

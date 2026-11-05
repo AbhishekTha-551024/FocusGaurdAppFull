@@ -55,7 +55,7 @@ class AdultContentVpnService : VpnService() {
 
         fun stop(context: Context) {
             val intent = Intent(context, AdultContentVpnService::class.java).apply { action = ACTION_STOP }
-            context.startService(intent)
+            runCatching { context.startService(intent) }.onFailure { Log.w(TAG, "VPN stop dispatch failed: ${it.message}") }
         }
     }
 
@@ -98,13 +98,13 @@ class AdultContentVpnService : VpnService() {
             notificationHelper.createNotificationChannel()
             startForeground(VpnNotificationHelper.NOTIFICATION_ID, notificationHelper.buildNotification())
 
+            // DNS-only tunnel: only 10.0.0.1:53 enters the TUN. A default route would pull
+            // all traffic in, and echoing it back cannot forward it to the physical NIC.
             val builder = Builder()
                 .setSession("FocusGuard Adult Shield DNS")
                 .addAddress("10.0.0.1", 32)
-                .addRoute("0.0.0.0", 0)        // capture all traffic through TUN
+                .addRoute("10.0.0.1", 32)       // only DNS traffic enters the tunnel
                 .addDnsServer("10.0.0.1")       // send device DNS through us
-                .setMtu(1500)
-                .setBlocking(false)
 
             try {
                 builder.addDisallowedApplication(packageName)
@@ -159,7 +159,7 @@ class AdultContentVpnService : VpnService() {
 
         while (isRunning.get()) {
             try {
-                val length = input.read(buffer)
+                val length = input.read(buffer) // blocking read: 0 only on EOF
                 if (length <= 0) continue
 
                 packet.clear()

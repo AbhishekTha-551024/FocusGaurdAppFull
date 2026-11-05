@@ -25,7 +25,6 @@ import com.focusguard.app.core.designsystem.theme.*
 
 @Composable
 fun EmergencySupportSection(
-    deviceId: String,
     onOpenSupportCodeDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -43,8 +42,8 @@ fun EmergencySupportSection(
 
         Card(
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Forest800),
-            border = BorderStroke(1.dp, Emerald500.copy(alpha = 0.45f)),
+            colors = CardDefaults.cardColors(containerColor = RecoverySurface),
+            border = BorderStroke(1.dp, RecoveryBorder),
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onOpenSupportCodeDialog() }
@@ -58,13 +57,13 @@ fun EmergencySupportSection(
                     modifier = Modifier
                         .size(42.dp)
                         .clip(CircleShape)
-                        .background(Emerald500.copy(alpha = 0.15f)),
+                        .background(RecoveryAccent.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Key,
                         contentDescription = null,
-                        tint = Emerald500,
+                        tint = RecoveryAccent,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -78,8 +77,8 @@ fun EmergencySupportSection(
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Device ID: $deviceId • Tap to enter 6-digit offline code",
-                        color = Emerald400,
+                        text = "View registered email and enter a support passcode",
+                        color = RecoveryMuted,
                         fontSize = 12.sp,
                         lineHeight = 16.sp
                     )

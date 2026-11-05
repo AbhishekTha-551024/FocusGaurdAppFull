@@ -1,7 +1,7 @@
 package com.focusguard.app.feature.mindful.ui
 
 import android.content.Context
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.model.AppInfo
 
 sealed interface MindfulAppsUiEvent {
@@ -13,7 +13,4 @@ sealed interface MindfulAppsUiEvent {
     data object OnDismissAccountability : MindfulAppsUiEvent
     data class OnChallengeSuccess(val context: Context) : MindfulAppsUiEvent
     data object OnCancelChallenge : MindfulAppsUiEvent
-    data class UpdateDefaultAllowance(val packageName: String, val minutes: Int) : MindfulAppsUiEvent
-    data object OpenJournalDialog : MindfulAppsUiEvent
-    data object DismissJournalDialog : MindfulAppsUiEvent
 }

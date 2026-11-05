@@ -14,18 +14,18 @@ import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.ScheduleEntity
 import com.focusguard.app.core.model.AppInfo
 import com.focusguard.app.feature.schedules.ui.ScheduleScreen
 import com.focusguard.app.feature.schedules.ui.ScheduleUiState
+import com.focusguard.app.core.designsystem.theme.focusPageBackground
 import com.focusguard.app.ui.theme.FocusGuardTheme
 import com.focusguard.app.feature.timelimits.ui.TimeLimitScreen
 import com.focusguard.app.feature.timelimits.ui.TimeLimitUiState
@@ -75,11 +75,7 @@ fun LimitsParentScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Navy900, Color(0xFF0B1F15), Navy900)
-                    )
-                )
+                .focusPageBackground()
         ) {
             // Sub-tabs at top
             Surface(
@@ -212,4 +208,3 @@ fun LimitsParentScreen(
         }
     }
 }
-

@@ -11,7 +11,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -20,11 +19,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.focusguard.app.security.SupportVerificationResult
+import com.focusguard.app.core.designsystem.theme.*
 import kotlinx.coroutines.delay
 
-private val DialogSurface = Color(0xFF0F172A)
-private val AccentCyan = Color(0xFF06B6D4)
-private val TextMuted = Color(0xFF94A3B8)
 private const val SECONDS_PER_MINUTE = 60
 
 /**
@@ -35,22 +32,16 @@ private const val SECONDS_PER_MINUTE = 60
  * - the rate-limit countdown, which is ticked locally because the ViewModel value is only a
  *   snapshot taken when the dialog was composed.
  *
- * Sign-in state is passed in by [SettingsDialogsContainer]; a signed-in user must never be shown
- * a dead "Sign in with Google" button.
  */
 @Composable
 fun SupportCodeDialog(
-    deviceId: String,
     userEmail: String?,
-    isLoggedIn: Boolean,
-    onSignInWithGoogle: () -> Unit,
     cooldownRemainingSeconds: Long,
     onVerifyCode: (String) -> SupportVerificationResult,
     onApplyAction: suspend (SupportVerificationResult.Success) -> Boolean,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
     var verificationResult by remember { mutableStateOf<SupportVerificationResult?>(null) }
     var liveCooldownSeconds by remember { mutableStateOf(cooldownRemainingSeconds) }
 
@@ -84,7 +75,7 @@ fun SupportCodeDialog(
                 .wrapContentHeight()
                 .padding(16.dp),
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = DialogSurface)
+            colors = CardDefaults.cardColors(containerColor = RecoverySurface)
         ) {
             Column(
                 modifier = Modifier
@@ -97,9 +88,9 @@ fun SupportCodeDialog(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = supportCodeGuidance(userEmail, isLoggedIn),
+                    text = supportCodeGuidance(userEmail),
                     fontSize = 13.sp,
-                    color = TextMuted,
+                    color = White60,
                     textAlign = TextAlign.Center,
                     lineHeight = 18.sp
                 )
@@ -107,12 +98,7 @@ fun SupportCodeDialog(
                 Spacer(modifier = Modifier.height(18.dp))
 
                 SupportCodeEmailSection(
-                    userEmail = userEmail,
-                    isLoggedIn = isLoggedIn,
-                    deviceId = deviceId,
-                    onSignInWithGoogle = onSignInWithGoogle,
-                    clipboardManager = clipboardManager,
-                    context = context
+                    userEmail = userEmail
                 )
 
                 Spacer(modifier = Modifier.height(20.dp))
@@ -133,7 +119,7 @@ fun SupportCodeDialog(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(text = "Close", color = TextMuted)
+                    Text(text = "Close", color = White60)
                 }
             }
         }
@@ -146,13 +132,13 @@ private fun SupportCodeHeader() {
         modifier = Modifier
             .size(56.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(AccentCyan.copy(alpha = 0.15f)),
+            .background(Emerald500.copy(alpha = 0.15f)),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = Icons.Outlined.Key,
             contentDescription = null,
-            tint = AccentCyan,
+            tint = Emerald500,
             modifier = Modifier.size(28.dp)
         )
     }
@@ -166,11 +152,9 @@ private fun SupportCodeHeader() {
     )
 }
 
-private fun supportCodeGuidance(userEmail: String?, isLoggedIn: Boolean): String = when {
-    !userEmail.isNullOrBlank() ->
-        "Contact Support with your registered Gmail to receive your 6-digit emergency unlock code."
-    isLoggedIn ->
-        "You are signed in, but this account carries no email address. Send your Device ID to Support instead."
-    else ->
-        "Sign in with Google so Support can look up your Device ID, or send the Device ID below directly."
-}
+private fun supportCodeGuidance(userEmail: String?): String =
+    if (userEmail.isNullOrBlank()) {
+        "Enter your 6-digit emergency support passcode below."
+    } else {
+        "Use the registered email shown below to request a 6-digit emergency support passcode."
+    }

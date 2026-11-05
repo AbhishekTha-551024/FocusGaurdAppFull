@@ -1,6 +1,6 @@
 package com.focusguard.app.core.model
 
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChangeType
 
 data class ActiveChallengeState(
     val changeType: ChangeType,

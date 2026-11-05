@@ -17,7 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.designsystem.theme.*
 import com.focusguard.app.feature.auth.ui.components.PartnerInviteDialog
 import com.focusguard.app.feature.settings.ui.SettingsUiState
@@ -27,7 +27,7 @@ import com.focusguard.app.ui.challenge.PartnerApprovalPendingDialog
 import com.focusguard.app.ui.challenge.SentenceTypingChallengeDialog
 import com.focusguard.app.ui.components.FeaturePermissionsDialog
 import com.focusguard.app.ui.components.FeedControlWarningDialog
-import com.focusguard.app.ui.components.UninstallProtectionDurationDialog
+import com.focusguard.app.ui.components.UninstallProtectionArmingGate
 
 @Composable
 fun SettingsDialogsContainer(
@@ -86,10 +86,7 @@ fun SettingsDialogsContainer(
     // ── SUPPORT CODE DIALOG ──
     if (uiState.showSupportCodeDialog) {
         SupportCodeDialog(
-            deviceId = uiState.deviceId,
             userEmail = uiState.currentUserEmail,
-            isLoggedIn = uiState.isUserLoggedIn,
-            onSignInWithGoogle = onSignInWithGoogle,
             cooldownRemainingSeconds = uiState.supportCooldownSeconds,
             onVerifyCode = onVerifySupportCode,
             onApplyAction = onApplySupportAction,
@@ -236,9 +233,12 @@ fun SettingsDialogsContainer(
     }
 
     // ── UNINSTALL PROTECTION DURATION DIALOG ──
+    // Phase B: arming goes through the shared gate — notification rationale + runtime
+    // POST_NOTIFICATIONS request, then a fail-visible warning if both recovery channels
+    // (overlay + notifications) are missing. onArm is only called after the user passes it.
     if (uiState.showUninstallDurationDialog) {
-        UninstallProtectionDurationDialog(
-            onConfirm = onConfirmEnableUninstallProtection,
+        UninstallProtectionArmingGate(
+            onArm = onConfirmEnableUninstallProtection,
             onDismiss = onDismissUninstallDurationDialog
         )
     }

@@ -3,14 +3,15 @@ package com.focusguard.app.feature.settings.data.repository
 import android.util.Log
 import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.dao.SecurityEventDao
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
-import com.focusguard.app.core.database.entity.PendingStatus
+import com.focusguard.app.core.model.PendingStatus
 import com.focusguard.app.core.database.entity.SecurityEvent
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
+import com.focusguard.app.core.startup.CeStorageGate
 import com.focusguard.app.data.repository.MindfulRepository
 import com.focusguard.app.feature.appblocker.data.repository.AppBlockerRepositoryImpl
 import com.focusguard.app.feature.keywordblocker.data.repository.KeywordBlockerRepositoryImpl
@@ -51,6 +52,7 @@ class ChallengeRepositoryImpl @Inject constructor(
     private val protectionRepository: ProtectionRepositoryImpl,
     private val distractionFeedRepository: DistractionFeedRepositoryImpl,
     private val overlaySettingsRepository: OverlaySettingsRepositoryImpl,
+    private val ceStorageGate: CeStorageGate,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + ioDispatcher)
@@ -58,6 +60,7 @@ class ChallengeRepositoryImpl @Inject constructor(
     init {
         // Startup reconciliation and periodic check for past-due changes
         repoScope.launch {
+            ceStorageGate.awaitUnlocked()
             while (isActive) {
                 try {
                     reconcilePendingChanges()
@@ -68,12 +71,14 @@ class ChallengeRepositoryImpl @Inject constructor(
             }
         }
 
-        // Cleanup startup state
+        // Startup cleanup drops only applied pending changes. The challenge TYPE is the user's own
+        // setting and must survive a restart: resetting it to TYPING silently turned every saved
+        // PARTNER challenge into a sentence-typing challenge on the next app start, which is exactly
+        // the bypass an accountability partner is meant to close. Local-vs-cloud conflicts are
+        // resolved by keeping the stricter type, in AccountabilitySync.restore.
         repoScope.launch {
+            ceStorageGate.awaitUnlocked()
             pendingChangeDao.deleteApplied()
-            if (prefs.syncChallengeType != ChallengeType.TYPING) {
-                prefs.setChallengeType(ChallengeType.TYPING)
-            }
         }
 
         // Eagerly sync challenge preferences to syncPrefs RAM cache
@@ -173,7 +178,7 @@ class ChallengeRepositoryImpl @Inject constructor(
                     setChallengeType(newType)
                 }
                 ChangeType.UNINSTALL_REQUEST -> {
-                    protectionRepository.setUninstallProtectionEnabled(false)
+                    protectionRepository.setUninstallProtectionEnabled(false, challengeAuthorized = true)
                     logEvent(EventType.UNINSTALL_ATTEMPT, "Uninstall protection disabled via challenge approval")
                 }
                 ChangeType.DISABLE_DISTRACTION_FEED -> {
@@ -245,4 +250,3 @@ class ChallengeRepositoryImpl @Inject constructor(
         }
     }
 }
-

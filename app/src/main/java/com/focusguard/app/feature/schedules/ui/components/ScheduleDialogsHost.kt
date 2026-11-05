@@ -6,8 +6,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.runtime.Composable
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.feature.schedules.ui.ScheduleUiState
+import com.focusguard.app.feature.schedules.ui.ScheduleAccountabilityAction
 import com.focusguard.app.ui.challenge.ChangeChallengeTypeDialog
 import com.focusguard.app.ui.challenge.PartnerApprovalPendingDialog
 import com.focusguard.app.ui.challenge.SentenceTypingChallengeDialog
@@ -79,7 +80,12 @@ fun ScheduleDialogsHost(
     }
 
     uiState.pendingAccountabilitySchedule?.let { pendingSched ->
-        val actionVerb = if (pendingSched.isAdd) "Create '${pendingSched.schedule.title}'" else if (!pendingSched.isDelete) "Enable '${pendingSched.schedule.title}'" else "Delete '${pendingSched.schedule.title}'"
+        val actionVerb = when (pendingSched.action) {
+            ScheduleAccountabilityAction.CREATE -> "Create '${pendingSched.schedule.title}'"
+            ScheduleAccountabilityAction.ENABLE -> "Enable '${pendingSched.schedule.title}'"
+            ScheduleAccountabilityAction.DISABLE -> "Disable '${pendingSched.schedule.title}'"
+            ScheduleAccountabilityAction.DELETE -> "Delete '${pendingSched.schedule.title}'"
+        }
         ChangeChallengeTypeDialog(
             currentType = uiState.challengeType,
             currentSentence = uiState.commitmentSentence,
@@ -95,6 +101,7 @@ fun ScheduleDialogsHost(
             PartnerApprovalPendingDialog(
                 actionDescription = challenge.description,
                 partnerEmail = null,
+                statusMessage = "Partner approval is not connected for Focus Schedules yet. No change has been applied.",
                 onDismiss = onCancelChallenge
             )
         } else {

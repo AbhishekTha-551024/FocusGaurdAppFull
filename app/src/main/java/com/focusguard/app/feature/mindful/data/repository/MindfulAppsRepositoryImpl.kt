@@ -2,9 +2,8 @@ package com.focusguard.app.feature.mindful.data.repository
 
 import com.focusguard.app.core.common.result.AppError
 import com.focusguard.app.core.common.result.AppResult
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.database.entity.MindfulAppEntity
-import com.focusguard.app.core.database.entity.MindfulIntentLogEntity
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
 import com.focusguard.app.core.model.AppInfo
@@ -30,15 +29,6 @@ class MindfulAppsRepositoryImpl @Inject constructor(
 
     override fun getInstalledApps(): Flow<List<AppInfo>> =
         getInstalledAppsUseCase.execute()
-
-    override fun getRecentIntentLogs(): Flow<List<MindfulIntentLogEntity>> =
-        mindfulRepository.recentIntentLogs
-
-    override fun getTodayWalkedAwayCount(): Flow<Int> =
-        mindfulRepository.getTodayWalkedAwayCount()
-
-    override fun getTodayConsciousOpensCount(): Flow<Int> =
-        mindfulRepository.getTodayConsciousOpensCount()
 
     override suspend fun addMindfulApp(
         packageName: String,
@@ -74,24 +64,6 @@ class MindfulAppsRepositoryImpl @Inject constructor(
                 )
             }
         }
-
-    override suspend fun updateAllowanceMinutes(
-        packageName: String,
-        minutes: Int
-    ): AppResult<Unit> = withContext(ioDispatcher) {
-        try {
-            mindfulRepository.updateAllowanceMinutes(packageName, minutes)
-            AppResult.Success(Unit)
-        } catch (e: Exception) {
-            AppResult.Failure(
-                AppError.DatabaseError(
-                    errorCode = "DB-022",
-                    errorMessage = e.localizedMessage ?: "Failed to update allowance for $packageName",
-                    throwable = e
-                )
-            )
-        }
-    }
 
     override suspend fun activateChallengeForApp(
         packageName: String,

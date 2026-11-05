@@ -17,9 +17,14 @@ private const val TAG = "ServiceWindowActions"
  * ====================
  * Encapsulates global window actions (HOME, BACK), haptic feedback,
  * home launcher intent launching, and process termination for FocusGuardAccessibilityService.
+ *
+ * Every global action leaves through [sendGlobalAction], which the service routes through
+ * [GlobalActionGate]. Nothing here may call `service.performGlobalAction` directly: an unpaced
+ * HOME/BACK burst is what makes Vivo's anti-tapjacking watchdog unbind the service.
  */
 class ServiceWindowActions(
     private val service: AccessibilityService,
+    private val sendGlobalAction: (Int) -> Boolean,
     private val isSystemPackage: (String) -> Boolean,
     private val isLauncherPackage: (String) -> Boolean
 ) {
@@ -52,7 +57,7 @@ class ServiceWindowActions(
             val isLauncher = isLauncherPackage(pkg)
 
             // 1. Send BACK to dismiss any open app drawers, folders, recents, or popup menus
-            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            sendGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
             // 2. Kill background processes for 3rd-party unallowed apps to stop PiP video, audio, etc.
             if (!isSystem && !isLauncher) {
@@ -68,7 +73,36 @@ class ServiceWindowActions(
         }
     }
 
-    fun forceCloseApp(pkg: String) {
+    /**
+     * Sends the single "step back" that must happen BEFORE the block overlay is attached.
+     *
+     * Why before: once the shield is attached it owns input focus and swallows BACK (the same
+     * behavior LauncherEventHandler relies on). A BACK issued from onAttached never reaches the
+     * app, so the app stays parked on the blocked surface -- YouTube Short, Instagram Reels,
+     * Facebook Reels, a keyword page -- and reopening it resumes that surface and re-blocks in
+     * an endless loop.
+     *
+     * Why gated: BACK inside system Settings / Package Installer navigates to another system
+     * screen and re-triggers blocking. System and launcher packages are never touched here; HOME
+     * (sent later, after the overlay attaches) is what actually closes the app.
+     *
+     * @return true when a BACK was actually sent, so the caller can suppress a duplicate.
+     */
+    fun stepBackBeforeOverlay(pkg: String): Boolean {
+        if (!shouldStepBackBeforeOverlay(isSystemPackage(pkg), isLauncherPackage(pkg))) {
+            return false
+        }
+        return try {
+            val sent = sendGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            Log.d(TAG, "Pre-overlay BACK sent to $pkg")
+            sent
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send pre-overlay BACK to $pkg", e)
+            false
+        }
+    }
+
+    fun forceCloseApp(pkg: String, sendBack: Boolean = true) {
         try {
             val isSystem = isSystemPackage(pkg)
             val isLauncher = isLauncherPackage(pkg)
@@ -77,8 +111,11 @@ class ServiceWindowActions(
             // Sending BACK in settings navigates to a DIFFERENT settings page, which then fires
             // another TYPE_WINDOW_STATE_CHANGED event that can trigger another blocking round,
             // creating an infinite loop. Only send BACK for 3rd-party app video players.
-            if (!isSystem) {
-                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            // sendBack=false when stepBackBeforeOverlay() already sent it: the attached overlay
+            // swallows BACK, so repeating it here does nothing useful (and repeated global
+            // actions can unbind the service on Vivo).
+            if (!isSystem && sendBack) {
+                sendGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
             }
 
             // ── FIX: If pkg is the launcher, we still MUST send HOME + start home intent.
@@ -87,7 +124,7 @@ class ServiceWindowActions(
             // We skip BACK (done above for non-system) but always send HOME.
 
             // 2. Return to Home screen
-            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+            sendGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
 
             // 3. Kill background processes for 3rd party apps only (Chess, YouTube, etc.)
             // NEVER kill system packages -- this caused the AccessibilityService to become unbound!
@@ -106,6 +143,16 @@ class ServiceWindowActions(
         } catch (e: Exception) {
             Log.e(TAG, "Error force-closing $pkg", e)
         }
+    }
+
+    companion object {
+        /**
+         * The pre-overlay BACK is only ever safe for a real third-party app. System Settings,
+         * the package installer, and launchers must never receive it: BACK inside Settings opens
+         * a different system screen which re-triggers blocking (infinite loop).
+         */
+        fun shouldStepBackBeforeOverlay(isSystemPackage: Boolean, isLauncherPackage: Boolean): Boolean =
+            !isSystemPackage && !isLauncherPackage
     }
 }
 

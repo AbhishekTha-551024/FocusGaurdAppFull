@@ -1,7 +1,6 @@
 package com.focusguard.app.feature.appblocker.data.repository
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.focusguard.app.core.common.result.AppError
 import com.focusguard.app.core.common.result.AppResult
@@ -9,14 +8,16 @@ import com.focusguard.app.core.database.dao.BlockedAppDao
 import com.focusguard.app.core.database.dao.PendingChangeDao
 import com.focusguard.app.core.database.dao.SecurityEventDao
 import com.focusguard.app.core.database.entity.BlockedAppEntity
-import com.focusguard.app.core.database.entity.ChallengeType
-import com.focusguard.app.core.database.entity.ChangeType
+import com.focusguard.app.core.model.ChallengeType
+import com.focusguard.app.core.model.ChangeType
 import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.core.database.entity.PendingChangeEntity
 import com.focusguard.app.core.database.entity.SecurityEvent
+import com.focusguard.app.core.datastore.DirectBootStorage
 import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.core.di.IoDispatcher
 import com.focusguard.app.core.model.AppInfo
+import com.focusguard.app.core.startup.CeStorageGate
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
 import com.focusguard.app.feature.appblocker.domain.repository.AppBlockerRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -49,6 +50,7 @@ class AppBlockerRepositoryImpl @Inject constructor(
     private val eventDao: SecurityEventDao,
     private val prefs: FocusGuardPreferences,
     private val getInstalledAppsUseCase: GetInstalledAppsUseCase,
+    private val ceStorageGate: CeStorageGate,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : AppBlockerRepository {
 
@@ -63,22 +65,22 @@ class AppBlockerRepositoryImpl @Inject constructor(
     init {
         // 1. Synchronize blocked apps set for 0ms lookup & mirror to DE cache
         repoScope.launch {
+            ceStorageGate.awaitUnlocked()
             blockedAppDao.watchBlockedApps().collect { list ->
                 cachedBlockedPackages.clear()
                 cachedBlockedPackages.addAll(list.map { it.packageName.lowercase() })
                 prefs.updateSyncCounts(apps = list.size)
                 Log.d(TAG, "Synchronized blocked apps cache: ${cachedBlockedPackages.size} packages")
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    try {
-                        val deContext = context.createDeviceProtectedStorageContext()
-                        deContext.getSharedPreferences("focusguard_de_cache", Context.MODE_PRIVATE)
-                            .edit()
-                            .putStringSet("blocked_packages", list.map { it.packageName.lowercase() }.toSet())
-                            .apply()
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Failed to cache blocked packages in DE: ${e.message}")
-                    }
+                // minSdk 26 > API 24, so the former SDK_INT >= N guard here was permanently true.
+                try {
+                    val deContext = context.createDeviceProtectedStorageContext()
+                    deContext.getSharedPreferences(DirectBootStorage.DE_CACHE_FILE, Context.MODE_PRIVATE)
+                        .edit()
+                        .putStringSet("blocked_packages", list.map { it.packageName.lowercase() }.toSet())
+                        .apply()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Failed to cache blocked packages in DE: ${e.message}")
                 }
             }
         }

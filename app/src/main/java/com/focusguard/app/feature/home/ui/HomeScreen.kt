@@ -16,12 +16,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.focusguard.app.capability.Capability
-import com.focusguard.app.core.database.entity.ChallengeType
+import com.focusguard.app.core.model.ChallengeType
 import com.focusguard.app.core.designsystem.theme.*
 import com.focusguard.app.core.model.AuthUser
 import com.focusguard.app.feature.home.ui.components.*
@@ -170,11 +169,7 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .animateContentSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Forest950, Forest900, Forest950)
-                    )
-                )
+                .focusPageBackground()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -190,6 +185,7 @@ fun HomeScreen(
             MissingPermissionsCard(
                 uiState = uiState,
                 onOpenAccessibilityDisclosure = { showAccessibilityDisclosure = true },
+                onRefreshPermissions = onRefreshPermissions,
                 onOpenOemProtectionDialog = { showOemProtectionDialog = true }
             )
 
@@ -228,6 +224,12 @@ fun HomeScreen(
                 uninstallProtectionDays = settingsUiState.uninstallProtectionDays,
                 currentTimeMs = currentTimeMs,
                 onRequestToggleUninstallProtection = onRequestToggleUninstallProtection
+            )
+
+            // Recovery visibility: notification permission is the channel that survives a
+            // background activity-launch block, so ask for it when protection is armed.
+            RecoveryAlertsGuard(
+                isProtectionActive = settingsUiState.isUninstallProtectionEnabled && uiState.isDeviceAdminActive
             )
 
             // Block Overlay & Behavior
