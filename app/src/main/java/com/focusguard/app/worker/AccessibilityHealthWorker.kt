@@ -12,8 +12,10 @@ import androidx.core.app.NotificationCompat
 import androidx.work.*
 import com.focusguard.app.R
 import com.focusguard.app.data.repository.FocusGuardRepository
+import com.focusguard.app.recovery.AccessibilityRecoveryHelper
+import com.focusguard.app.recovery.AccessibilityRecoveryScheduler
+import com.focusguard.app.recovery.AccessibilityStatusChecker
 import com.focusguard.app.service.FocusGuardAccessibilityService
-import com.focusguard.app.service.ProtectionWatchdogService
 import com.focusguard.app.ui.onboarding.OnboardingActivity
 import com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity
 import dagger.hilt.EntryPoint
@@ -24,7 +26,7 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "AccessibilityHealth"
 private const val CHANNEL_ID = "focusguard_health_channel"
-private const val NOTIFICATION_ID = 9905
+private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_ACCESSIBILITY_HEALTH_ALERT
 
 @EntryPoint
 @InstallIn(SingletonComponent::class)
@@ -38,9 +40,7 @@ interface AccessibilityHealthWorkerEntryPoint {
  * Background watchdog running every 15 minutes to detect and self-heal the "Ghost Accessibility" state.
  *
  * If Android OS killed or froze the AccessibilityService process in the background,
- * this worker:
- * 1. Restarts [ProtectionWatchdogService] (START_STICKY) to restore foreground process priority.
- * 2. Alerts the user via a high-priority notification with a one-tap intent to re-arm the shield.
+ * this worker alerts the user via a high-priority notification with a one-tap intent to re-arm the shield.
  */
 class AccessibilityHealthWorker(
     private val appContext: Context,
@@ -56,22 +56,41 @@ class AccessibilityHealthWorker(
 
     override suspend fun doWork(): Result {
         return try {
-            val isRunning = FocusGuardAccessibilityService.isServiceRunning
-            Log.d(TAG, "Accessibility health check: isServiceRunning=$isRunning")
+            val isRapidAttempt = inputData.getBoolean(KEY_RAPID, false)
+            if (isRapidAttempt) AccessibilityRecoveryScheduler.recordAttempt(appContext)
 
-            if (!isRunning) {
-                // If user has active protection configured, notify them to reactivate
-                val isProtectionConfigured = repository.isFastUninstallProtectionEnabled() ||
-                        repository.getFastBlockedAppsCount() > 0
+            val isServiceAlive = FocusGuardAccessibilityService.isServiceRunning
+            val isConfiguredInSettings = AccessibilityStatusChecker.isAccessibilityConfiguredInSettings(appContext)
+            val isHealthy = isServiceAlive && isConfiguredInSettings
+            Log.d(TAG, "Accessibility health check: alive=$isServiceAlive configuredInSettings=$isConfiguredInSettings rapid=$isRapidAttempt")
 
-                if (isProtectionConfigured) {
-                    Log.w(TAG, "Ghost Accessibility state detected: service is dead while protection was enabled. Alerting user.")
-                    postReactivationNotification(appContext)
+            // Invariant Rule 3: recover or alert only while uninstall protection is strictly ACTIVE.
+            // Go through the shared gate so a worker that runs before the repository cache is hydrated
+            // (directly after a reboot) still reads the device-protected mirror instead of "OFF".
+            val isProtectionActive = AccessibilityRecoveryHelper.isProtectionActive(appContext, repository)
+
+            if (!isHealthy) {
+                if (isProtectionActive) {
+                    // Ghost state (service dead or dropped from Settings while protection is ON):
+                    // heal silently first and let the helper escalate to the recovery UI + alert only
+                    // when the silent path is unavailable.
+                    Log.w(TAG, "Accessibility is not bound while protection is ON. Healing.")
+                    AccessibilityRecoveryHelper.restoreProtectionFast(
+                        context = appContext,
+                        source = "AccessibilityHealthWorker",
+                        repository = repository
+                    )
+                } else {
+                    Log.d(TAG, "Accessibility not running, but uninstall protection is inactive. Dismissing alerts.")
+                    AccessibilityRecoveryScheduler.resetAttempts(appContext)
+                    cancelReactivationNotification(appContext)
                 }
             } else {
+                AccessibilityRecoveryScheduler.resetAttempts(appContext)
+
                 // Check if battery optimization was revoked while protection is active
                 val isBatteryExempt = com.focusguard.app.utils.BatteryOptimizationHelper.isBatteryOptimizationIgnored(appContext)
-                if (!isBatteryExempt && repository.isFastUninstallProtectionEnabled()) {
+                if (!isBatteryExempt && isProtectionActive) {
                     Log.w(TAG, "Battery Optimization exemption was revoked while protection enabled.")
                     postBatteryOptimizationNotification()
                 }
@@ -122,24 +141,64 @@ class AccessibilityHealthWorker(
 
     companion object {
         private const val UNIQUE_WORK_NAME = "focusguard_accessibility_health_watchdog"
+        private const val HEAL_WORK_NAME = "focusguard_accessibility_heal_check"
+        private const val KEY_RAPID = "is_rapid_binding_attempt"
         const val CHANNEL_ID = "focusguard_health_channel"
-        const val NOTIFICATION_ID = 9905
+        const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_ACCESSIBILITY_HEALTH_ALERT
 
-        fun schedulePeriodicCheck(context: Context) {
+        /**
+         * Registers the periodic watchdog. Returns false when WorkManager is not usable in this
+         * process yet (it can be started by the framework before its initializer provider runs).
+         */
+        fun schedulePeriodicCheck(context: Context): Boolean {
             val request = PeriodicWorkRequestBuilder<AccessibilityHealthWorker>(
                 15, TimeUnit.MINUTES,
                 5, TimeUnit.MINUTES // 5-minute flex window
             ).build()
 
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                UNIQUE_WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
-                request
-            )
-            Log.i(TAG, "Scheduled 15-minute periodic AccessibilityHealthWorker")
+            return try {
+                WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                    UNIQUE_WORK_NAME,
+                    ExistingPeriodicWorkPolicy.KEEP,
+                    request
+                )
+                Log.i(TAG, "Scheduled 15-minute periodic AccessibilityHealthWorker")
+                true
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "WorkManager not ready, periodic watchdog skipped: ${e.message}")
+                false
+            }
+        }
+
+        /**
+         * One-shot heal pass after [delayMs]. Used to verify that the OS actually bound the service
+         * instead of merely keeping it in Settings.Secure.
+         */
+        fun scheduleHealCheck(context: Context, delayMs: Long, rapid: Boolean) {
+            val request = OneTimeWorkRequestBuilder<AccessibilityHealthWorker>()
+                .setInputData(Data.Builder().putBoolean(KEY_RAPID, rapid).build())
+                .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
+                .build()
+
+            try {
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    HEAL_WORK_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+                Log.i(TAG, "Scheduled one-shot accessibility heal check in ${delayMs}ms (rapid=$rapid)")
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "WorkManager not ready, heal check skipped: ${e.message}")
+            }
         }
 
         fun postReactivationNotification(context: Context) {
+            if (!com.focusguard.app.recovery.AccessibilityRecoveryHelper.isProtectionActive(context)) {
+                Log.d(TAG, "postReactivationNotification: protection is inactive, skipping.")
+                cancelReactivationNotification(context)
+                return
+            }
+
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -179,15 +238,13 @@ class AccessibilityHealthWorker(
 
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setContentTitle("🚨 CRITICAL: FocusGuard Protection Paused")
-                .setContentText("Accessibility was stopped by device restart or OS. Tap to restore immediately.")
+                .setContentText("Accessibility was turned off. Tap to restore immediately.")
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(recoveryPendingIntent)
-                .setFullScreenIntent(recoveryPendingIntent, true)
                 .addAction(R.drawable.ic_notification, "Restore Shield", settingsPendingIntent)
                 .setOngoing(true)
                 .setAutoCancel(false)
-                .setCategory(NotificationCompat.CATEGORY_ALARM)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
 

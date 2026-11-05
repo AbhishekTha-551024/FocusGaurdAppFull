@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,40 @@ plugins {
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
     alias(libs.plugins.google.services)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Emergency Support Passcode master secret (ECC rules/kotlin/security.md:
+// "Never hardcode API keys, tokens, or credentials in source code").
+//
+// Resolution order (first non-blank wins):
+//   1. Gradle property  -Psupport.master.secret=<value>   (CI/CD)
+//   2. Env variable     FOCUSGUARD_SUPPORT_SECRET          (CI/CD)
+//   3. local.properties support.master.secret=<value>      (local dev, git-ignored)
+//
+// The build FAILS FAST when the secret is unavailable, exactly as the security
+// rule requires ("Validate that required secrets are present at startup").
+// ─────────────────────────────────────────────────────────────────────────────
+val localSupportSecretProperties = Properties().apply {
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) localFile.inputStream().use { load(it) }
+}
+
+val supportMasterSecret: String = sequenceOf(
+    providers.gradleProperty("support.master.secret").orNull,
+    System.getenv("FOCUSGUARD_SUPPORT_SECRET"),
+    localSupportSecretProperties.getProperty("support.master.secret")
+).firstNotNullOfOrNull { it?.trim()?.takeIf(String::isNotEmpty) }.orEmpty()
+
+require(supportMasterSecret.isNotEmpty()) {
+    "FocusGuard support-code master secret is missing. Provide it with one of:\n" +
+        "  1. local.properties        -> support.master.secret=<value>   (git-ignored, local dev)\n" +
+        "  2. environment variable    -> FOCUSGUARD_SUPPORT_SECRET=<value>\n" +
+        "  3. gradle property         -> -Psupport.master.secret=<value>"
+}
+require(!supportMasterSecret.contains('"') && !supportMasterSecret.contains('\\')) {
+    "support.master.secret must not contain a double quote or a backslash: it is embedded into a " +
+        "BuildConfig String literal and would break the generated source."
 }
 
 android {
@@ -17,6 +53,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+
+        buildConfigField("String", "SUPPORT_MASTER_SECRET", "\"$supportMasterSecret\"")
     }
 
     signingConfigs {
@@ -58,6 +96,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true        // SupportCodeEngine reads BuildConfig.SUPPORT_MASTER_SECRET
     }
 }
 
@@ -118,4 +157,5 @@ dependencies {
 
     // Unit Testing
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

@@ -1,10 +1,14 @@
-﻿package com.focusguard.app.receiver
+package com.focusguard.app.receiver
 
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Process
 import android.util.Log
+import com.focusguard.app.recovery.AccessibilityRecoveryHelper
+import com.focusguard.app.service.BootCoverService
+import com.focusguard.app.ui.recovery.AccessibilityRecoveryActivity
+import com.focusguard.app.worker.AccessibilityHealthWorker
 
 private const val TAG = "FGPackageRemovedReceiver"
 
@@ -17,8 +21,9 @@ private const val TAG = "FGPackageRemovedReceiver"
  * for com.focusguard.app. On some OEMs this also triggers the OS to disable the
  * primary user's Accessibility Services.
  *
- * This receiver posts an urgent reactivation notification so the user can
- * re-enable accessibility in one tap.
+ * This receiver instantly restores protection and takes over the screen via
+ * [BootCoverService] and [AccessibilityRecoveryActivity] so the user cannot
+ * access Settings to tamper with the app.
  */
 class PackageRemovedReceiver : BroadcastReceiver() {
 
@@ -43,15 +48,41 @@ class PackageRemovedReceiver : BroadcastReceiver() {
                     return
                 }
 
-                Log.w(TAG, "FocusGuard package event: action= — " +
-                        "Clone removal may have disrupted Accessibility Service!")
+                Log.w(TAG, "FocusGuard package event: action=$action — Clone removal may have disrupted Accessibility Service!")
 
-                // Post an urgent notification so the user can re-enable accessibility in one tap
+                val isProtected = AccessibilityRecoveryHelper.isProtectionActive(context)
+                if (isProtected) {
+                    Log.w(TAG, "Clone removal detected while Uninstall Protection is ACTIVE! Restoring protection and mounting cover overlay immediately.")
+
+                    // 1. Attempt programmatic restore (<1ms if WRITE_SECURE_SETTINGS)
+                    AccessibilityRecoveryHelper.restoreProtectionFast(
+                        context = context,
+                        source = "PackageRemovedReceiver:$action"
+                    )
+
+                    // 2. Launch BootCoverService overlay if accessibility is not running
+                    try {
+                        BootCoverService.start(context)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to start BootCoverService: ${e.message}", e)
+                    }
+
+                    // 3. Launch full-screen AccessibilityRecoveryActivity
+                    try {
+                        AccessibilityRecoveryActivity.start(
+                            context = context,
+                            reason = "A cloned instance was removed, which turned off Accessibility. Please turn Accessibility back ON to keep your device protected."
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to start AccessibilityRecoveryActivity: ${e.message}", e)
+                    }
+                }
+
+                // 4. Also post persistent high-priority notification as fallback
                 try {
-                    com.focusguard.app.worker.AccessibilityHealthWorker
-                        .postReactivationNotification(context)
+                    AccessibilityHealthWorker.postReactivationNotification(context)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to post reactivation notification: {e.message}", e)
+                    Log.e(TAG, "Failed to post reactivation notification: ${e.message}", e)
                 }
             }
         }

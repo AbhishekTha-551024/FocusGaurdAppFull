@@ -57,9 +57,14 @@
     <!-- Wake lock to ensure boot receiver can complete recovery before CPU sleeps -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Internet access — required by AdultContentVpnService for upstream DNS forwarding
+         and live SafeSearch IP resolution (InetAddress.getAllByName). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".FocusGuardApplication"
         android:allowBackup="false"
+        android:usesCleartextTraffic="false"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -85,7 +90,7 @@
              DEEP FOCUS LOCKDOWN FULL-SCREEN ACTIVITY
              ============================================================ -->
         <activity
-            android:name=".ui.session.SessionLockActivity"
+            android:name="com.focusguard.app.feature.session.ui.SessionLockActivity"
             android:exported="false"
             android:launchMode="singleTask"
             android:theme="@style/Theme.FocusGuard"
@@ -112,7 +117,8 @@
             android:name=".service.FocusGuardAccessibilityService"
             android:exported="true"
             android:label="@string/accessibility_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
@@ -122,12 +128,16 @@
         </service>
 
         <!-- ============================================================
-             STICKY FOREGROUND WATCHDOG SERVICE
+             BOOT COVER SHIELD SERVICE (Temporary Post-Boot Intercept)
              ============================================================ -->
         <service
-            android:name=".service.ProtectionWatchdogService"
+            android:name=".service.BootCoverService"
             android:exported="false"
-            android:enabled="false" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Temporary boot shield cover overlay while accessibility service connects" />
+        </service>
 
         <!-- ============================================================
              DEEP FOCUS LOCKDOWN SESSION SERVICE
@@ -139,6 +149,25 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Deep focus session countdown and lock management" />
+        </service>
+
+        <!-- ============================================================
+             LAYER 1: ADULT CONTENT DNS VPN SERVICE
+             Captures only UDP port 53 (plain-text DNS). All other traffic
+             passes through the physical NIC unmodified (zero battery impact).
+             Requires VPN permission granted by the user via system dialog.
+             ============================================================ -->
+        <service
+            android:name=".service.AdultContentVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="DNS-level adult content filter and SafeSearch enforcement" />
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
         </service>
 
         <!-- ============================================================

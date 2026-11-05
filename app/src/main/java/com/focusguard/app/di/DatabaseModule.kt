@@ -2,7 +2,9 @@ package com.focusguard.app.di
 
 import android.content.Context
 import androidx.room.Room
-import com.focusguard.app.data.db.*
+import com.focusguard.app.core.database.FocusGuardDatabase
+import com.focusguard.app.core.database.dao.*
+import com.focusguard.app.core.database.entity.*
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -22,9 +24,7 @@ object DatabaseModule {
             FocusGuardDatabase::class.java,
             "focusguard.db"
         )
-            // Prevents startup crash (IllegalStateException) when schema version is bumped
-            .fallbackToDestructiveMigration()
-            .fallbackToDestructiveMigrationOnDowngrade()
+            .addMigrations(*com.focusguard.app.core.database.DatabaseMigrations.ALL_MIGRATIONS)
             .build()
 
     @Provides

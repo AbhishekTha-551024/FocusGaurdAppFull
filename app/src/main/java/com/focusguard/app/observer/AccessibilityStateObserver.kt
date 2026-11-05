@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
-import com.focusguard.app.data.db.EventType
+import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.service.FocusGuardAccessibilityService
 import kotlinx.coroutines.CoroutineScope
@@ -49,26 +49,32 @@ class AccessibilityStateObserver(
             // coroutine starts). This prevents handleSecurityTamper() from being called while the
             // OEM scanner is active — that call sends GLOBAL_ACTION_HOME which triggers Vivo's
             // anti-tapjacking watchdog and causes the service to be force-unbound.
-            com.focusguard.app.service.FocusGuardAccessibilityService.markOemScanActive(windowMs = 12_000L)
+            com.focusguard.app.service.FocusGuardAccessibilityService.markOemScanActive(windowMs = com.focusguard.app.core.common.constants.Timings.A11Y_OBSERVER_COOLDOWN_MS)
             Log.d(TAG, "ContentObserver: OEM scan window armed. Starting 7s debounce check...")
 
             if (verificationJob == null || verificationJob?.isActive == false) {
                 verificationJob = scope.launch(Dispatchers.IO) {
-                    delay(7000L)
+                    delay(1200L)
                     val stillOff = !com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
                     if (stillOff) {
-                        Log.w(TAG, "ContentObserver: FocusGuard Accessibility Service confirmed OFF after debounce! Triggering recovery.")
-                        com.focusguard.app.recovery.AccessibilityRecoveryHelper.restoreProtectionFast(
-                            context = context,
-                            source = "AccessibilityObserver:ConfirmedOff",
-                            repository = repository
-                        )
-                        val isOnboardingComplete = repository.isOnboardingComplete.first()
-                        if (isOnboardingComplete) {
-                            repository.logEvent(
-                                EventType.ADMIN_DISABLED,
-                                "Accessibility Service disabled by user in Settings [ContentObserver]"
+                        val isProtected = com.focusguard.app.recovery.AccessibilityRecoveryHelper.isProtectionActive(context, repository)
+                        if (isProtected) {
+                            Log.w(TAG, "ContentObserver: FocusGuard Accessibility Service confirmed OFF after debounce while protected! Triggering recovery.")
+                            com.focusguard.app.recovery.AccessibilityRecoveryHelper.restoreProtectionFast(
+                                context = context,
+                                source = "AccessibilityObserver:ConfirmedOff",
+                                repository = repository
                             )
+                            val isOnboardingComplete = repository.isOnboardingComplete.first()
+                            if (isOnboardingComplete) {
+                                repository.logEvent(
+                                    EventType.ADMIN_DISABLED,
+                                    "Accessibility Service disabled by user in Settings [ContentObserver]"
+                                )
+                            }
+                        } else {
+                            Log.i(TAG, "ContentObserver: Accessibility Service confirmed OFF, but uninstall protection is inactive. Allowing service to remain OFF.")
+                            com.focusguard.app.worker.AccessibilityHealthWorker.cancelReactivationNotification(context)
                         }
                     } else {
                         Log.i(TAG, "ContentObserver: Accessibility Service restored within debounce window (OEM temporary check). No alert.")

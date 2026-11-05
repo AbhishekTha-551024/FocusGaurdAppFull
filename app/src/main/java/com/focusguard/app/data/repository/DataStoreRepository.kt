@@ -1,6 +1,6 @@
 package com.focusguard.app.data.repository
 
-import com.focusguard.app.data.datastore.FocusGuardPreferences
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject

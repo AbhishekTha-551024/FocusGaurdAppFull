@@ -1,0 +1,123 @@
+version: 1
+
+repowiki:
+  notes:
+    - author: FocusGuard maintainers
+      text: >-
+        Every block sends exactly one GLOBAL_ACTION_BACK BEFORE the block overlay attaches, then
+        HOME after attach (overlay first, HOME only after it is attached). After attach the
+        overlay swallows BACK, so a later BACK never reaches the app and YouTube Shorts,
+        Instagram Reels or Facebook Reels resume the blocked surface on the next launch,
+        producing an endless block-close-reopen loop.
+    - author: FocusGuard maintainers
+      text: >-
+        Never send the pre-overlay BACK to system Settings, the package installer or launchers,
+        because BACK inside Settings opens another system page and re-triggers blocking. All
+        features (hard block, time limit, schedule, keyword, adult-content shield,
+        incognito/private tabs, universal search, browser URLs, YouTube metadata and Shorts,
+        Instagram/Facebook Reels, auto-block, mindful allowance expiry) share
+        BlockTrigger.triggerBlock for this close sequence; do not add per-feature close logic.
+    - author: FocusGuard maintainers
+      text: >-
+        Accessibility auto-recovery runs only when protection is wanted: Device Admin active AND
+        Uninstall Protection enabled and unexpired. When Uninstall Protection is off or expired,
+        never re-enable Accessibility; cancel recovery notifications instead.
+    - author: FocusGuard maintainers
+      text: >-
+        Accessibility state has one authority: AccessibilityManager's enabled-service list plus
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES. The in-memory isServiceRunning flag is a
+        hint only; never let it short-circuit the check, or the in-app UI reports ON while
+        Android Settings shows OFF.
+    - author: FocusGuard maintainers
+      text: >-
+        The recovery detector must live outside FocusGuardAccessibilityService (boot receiver,
+        health worker, application-process content observer). A detector hosted inside the
+        accessibility service dies with the service it is supposed to monitor.
+    - author: FocusGuard maintainers
+      text: >-
+        Writes to ENABLED_ACCESSIBILITY_SERVICES are idempotent and non-destructive: re-read
+        immediately before writing, preserve every other service component, skip the write when
+        the stored value is blank but was previously non-blank, and rate-limit retries.
+    - author: FocusGuard maintainers
+      text: >-
+        Unsupported-browser quarantine reads its whitelist only from
+        BrowserPackageRegistry.VERIFIED_SUPPORTED_BROWSERS and acts only when
+        isBlockUnsupportedBrowsersEnabled is on. Never duplicate browser lists in handlers or UI.
+    - author: FocusGuard maintainers
+      text: >-
+        Keep AGENTS.md structural rules: max 300 lines per file, one responsibility per file,
+        domain layer pure Kotlin. Extract code before growing FocusGuardAccessibilityService
+        (1005 lines) any further.
+    - author: FocusGuard maintainers
+      text: >-
+        Judge a Device Admin loss against the STORED Uninstall Protection flag (CE sync cache or
+        device-protected mirror), never against isProtectionActive: that gate already returns false
+        once the admin is gone, so using it classifies the event as "protection off" and silently
+        skips the response.
+    - author: FocusGuard maintainers
+      text: >-
+        A successful write to ENABLED_ACCESSIBILITY_SERVICES is not a binding. When Settings lists
+        FocusGuard but the service never binds, recovery must force a remove-and-re-add rebind
+        through one shared rebinder, re-verify with the strict health probe, and escalate to a
+        visible gate instead of reporting success.
+    - author: FocusGuard maintainers
+      text: >-
+        Recovery detection must survive process death. The probe and the secure-setting observer
+        belong in a foreground protection guard started from boot, package-replaced,
+        admin-enabled/disabled and unlock callbacks, not only in Application.onCreate. Background
+        receivers may not launch activities on Android 10+, so recovery UI must be requested with a
+        full-screen-intent notification.
+    - author: FocusGuard maintainers
+      text: >-
+        A non-Device-Owner app can never prevent Device Admin deactivation or uninstall. The
+        achievable contract is: every disarm is locked, re-asked and healed, and no doc, comment or
+        UI claims "unbreakable" outside the optional Device Owner mode (setUninstallBlocked,
+        setUserControlDisabledPackages).
+
+knowledgecard:
+  notes:
+    - author: FocusGuard maintainers
+      text: >-
+        Every block sends exactly one GLOBAL_ACTION_BACK BEFORE the block overlay attaches, then
+        HOME after attach. The attached overlay swallows BACK, so a later BACK leaves YouTube
+        Shorts, Instagram Reels or Facebook Reels on screen and reopening them re-blocks in a
+        loop.
+    - author: FocusGuard maintainers
+      text: >-
+        The shared close sequence is BlockTrigger.triggerBlock ->
+        ServiceWindowActions.stepBackBeforeOverlay (system and launcher packages exempt) ->
+        overlay attach -> forceCloseApp(sendBack = false). YouTube Shorts, Instagram/Facebook
+        Reels, keyword, adult-content shield, incognito/private tabs, universal search, browser,
+        hard block, schedule, time limit, auto-block and mindful-expiry features must keep calling
+        triggerBlock instead of implementing their own close logic.
+    - author: FocusGuard maintainers
+      text: >-
+        Accessibility auto-recovery is gated by protection state (Device Admin active AND
+        Uninstall Protection enabled and unexpired). Document the recovery chain as boot receiver
+        -> recovery helper -> programmatic enabler -> recovery activity/notification, and note
+        that recovery is intentionally skipped when protection is off.
+    - author: FocusGuard maintainers
+      text: >-
+        The accessibility state check must consult AccessibilityManager and Settings.Secure as
+        authority; isServiceRunning is a fast hint kept for lifecycle bookkeeping only. The
+        detection and recovery code paths live outside the accessibility service.
+    - author: FocusGuard maintainers
+      text: >-
+        Browser quarantine is a whitelist in BrowserPackageRegistry consumed by
+        BrowserGuardHandler; it is one layer, not a complete defense, and depends on the user
+        toggle plus a working Accessibility Service.
+    - author: FocusGuard maintainers
+      text: >-
+        Protection is armed when Device Admin is active AND the stored Uninstall Protection flag is
+        enabled and unexpired. Admin-loss and boot paths read the stored flag from the sync
+        cache/DE mirror so an absent admin is never mistaken for "protection off".
+    - author: FocusGuard maintainers
+      text: >-
+        Recovery chain: boot/unlock/package-replaced/admin callback -> foreground protection guard
+        -> probe and secure-setting observer -> recovery helper -> silent write -> binding
+        verification -> forced rebind -> visible gate. A successful write alone is never success.
+    - author: FocusGuard maintainers
+      text: >-
+        A non-Device-Owner install cannot be made unremovable. Document Device Owner
+        (setUninstallBlocked, setUserControlDisabledPackages) as an optional maximum-protection mode
+        and keep every other claim scoped to "no silent bypass".

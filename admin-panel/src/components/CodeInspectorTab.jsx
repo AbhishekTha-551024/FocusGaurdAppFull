@@ -11,26 +11,32 @@ import {
 } from 'lucide-react';
 import {
   reverseInspectCode,
-  normalizeDeviceId,
-  DEFAULT_MASTER_SECRET
+  normalizeDeviceId
 } from '../crypto/codeGenerator';
 
 export default function CodeInspectorTab() {
   const [deviceId, setDeviceId] = useState('FG-8821-4902');
-  const [inputCode, setInputCode] = useState('653462');
+  const [inputCode, setInputCode] = useState('');
   const [inspectionResult, setInspectionResult] = useState(null);
+  const [inspectionError, setInspectionError] = useState('');
   const [customPackage, setCustomPackage] = useState('');
 
   const handleInspect = (e) => {
     e?.preventDefault();
+    setInspectionError('');
     const customList = customPackage.trim() ? [customPackage.trim().toLowerCase()] : [];
-    const result = reverseInspectCode({
-      deviceId,
-      inputCode,
-      secretKey: DEFAULT_MASTER_SECRET,
-      customTargets: customList
-    });
-    setInspectionResult({ ...result, inspectedCode: inputCode, inspectedDevice: deviceId });
+    try {
+      // No secretKey is passed: the engine reads VITE_SUPPORT_MASTER_SECRET and refuses to guess.
+      const result = reverseInspectCode({
+        deviceId,
+        inputCode,
+        customTargets: customList
+      });
+      setInspectionResult({ ...result, inspectedCode: inputCode, inspectedDevice: deviceId });
+    } catch (err) {
+      setInspectionResult(null);
+      setInspectionError(err.message || 'Could not inspect this code.');
+    }
   };
 
   return (
@@ -108,6 +114,17 @@ export default function CodeInspectorTab() {
           </button>
         </form>
 
+        {/* Configuration / diagnosis errors (missing master secret surfaces here, not as an alert) */}
+        {inspectionError && (
+          <div className="match-status-banner failure animate-fade-in" role="alert">
+            <AlertTriangle size={22} />
+            <div>
+              <div className="match-title">Cannot inspect this code</div>
+              <div className="match-desc">{inspectionError}</div>
+            </div>
+          </div>
+        )}
+
         {/* Results Section */}
         {inspectionResult && (
           <div className="inspection-results-area animate-fade-in">
@@ -135,7 +152,7 @@ export default function CodeInspectorTab() {
                           Action {match.action.code}
                         </span>
                         {match.isToday ? (
-                          <span className="badge badge-emerald">Valid Today</span>
+                          <span className="badge badge-emerald">Signed For Today</span>
                         ) : (
                           <span className="badge badge-amber">Date: {match.date}</span>
                         )}
@@ -167,7 +184,7 @@ export default function CodeInspectorTab() {
                     <strong>{inspectionResult.inspectedDevice}</strong> across Yesterday, Today, or Tomorrow.
                   </div>
                   <ul className="troubleshooting-tips">
-                    <li>Check if the user typed their Device ID incorrectly (case & hyphens matter).</li>
+                    <li>Check the Device ID the user read out: hyphens matter (FG-8821-4902 is not FG88214902), letters are case-insensitive.</li>
                     <li>Verify if the user is in a vastly different timezone (more than &plusmn;24 hours).</li>
                     <li>
                       If the code was generated for a custom non-preset app package, enter the package name in the &quot;Custom Package&quot; field above and re-diagnose.

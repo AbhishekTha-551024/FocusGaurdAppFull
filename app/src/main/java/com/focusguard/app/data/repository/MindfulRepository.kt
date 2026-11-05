@@ -1,11 +1,11 @@
 package com.focusguard.app.data.repository
 
-import android.content.Context
+import android.os.SystemClock
 import android.util.Log
-import com.focusguard.app.data.db.MindfulAppEntity
-import com.focusguard.app.data.db.MindfulDao
-import com.focusguard.app.data.db.MindfulIntentLogEntity
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.focusguard.app.core.database.dao.MindfulDao
+import com.focusguard.app.core.database.entity.MindfulAppEntity
+import com.focusguard.app.core.startup.CeStorageGate
+import com.focusguard.app.feature.mindful.domain.model.MindfulAllowancePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,8 +22,8 @@ private const val TAG = "MindfulRepo"
 
 @Singleton
 class MindfulRepository @Inject constructor(
-    @ApplicationContext private val context: Context,
-    private val mindfulDao: MindfulDao
+    private val mindfulDao: MindfulDao,
+    private val ceStorageGate: CeStorageGate
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -44,11 +44,11 @@ class MindfulRepository @Inject constructor(
     )
 
     val allMindfulApps: Flow<List<MindfulAppEntity>> = mindfulDao.getAllMindfulApps()
-    val recentIntentLogs: Flow<List<MindfulIntentLogEntity>> = mindfulDao.getRecentLogs(50)
 
     init {
         // Continuously synchronize RAM cache from Room Database in real-time
         scope.launch {
+            ceStorageGate.awaitUnlocked()
             mindfulDao.getAllMindfulApps()
                 .distinctUntilChanged()
                 .collect { apps ->
@@ -72,8 +72,7 @@ class MindfulRepository @Inject constructor(
      */
     fun isAllowanceActive(packageName: String): Boolean {
         val expiry = activeAllowanceTokens[packageName] ?: return false
-        val now = System.currentTimeMillis()
-        return if (now < expiry) {
+        return if (MindfulAllowancePolicy.isActive(expiry, SystemClock.elapsedRealtime())) {
             true
         } else {
             activeAllowanceTokens.remove(packageName)
@@ -83,56 +82,18 @@ class MindfulRepository @Inject constructor(
 
     fun getRemainingAllowanceSeconds(packageName: String): Long {
         val expiry = activeAllowanceTokens[packageName] ?: return 0L
-        val remaining = (expiry - System.currentTimeMillis()) / 1000L
-        return if (remaining > 0L) remaining else 0L
+        return MindfulAllowancePolicy.remainingSeconds(expiry, SystemClock.elapsedRealtime())
     }
 
-    // ── Token Management & Journal Logging ──────────────────────────────────
+    // ── Allowance token management ────────────────────────────────────────────
 
     fun grantAllowance(
         packageName: String,
-        appName: String,
-        durationMinutes: Int,
-        intentText: String,
-        category: String = "CUSTOM"
+        durationMinutes: Int
     ) {
-        val expiry = System.currentTimeMillis() + (durationMinutes * 60 * 1000L)
+        val expiry = MindfulAllowancePolicy.expiryAt(SystemClock.elapsedRealtime(), durationMinutes)
         activeAllowanceTokens[packageName] = expiry
-        Log.i(TAG, "Granted $durationMinutes min allowance for $packageName (expires at $expiry)")
-
-        scope.launch {
-            mindfulDao.insertIntentLog(
-                MindfulIntentLogEntity(
-                    packageName = packageName,
-                    appName = appName,
-                    intentText = intentText.trim(),
-                    intentCategory = category,
-                    allowanceMinutes = durationMinutes,
-                    timestamp = System.currentTimeMillis(),
-                    wasWalkedAway = false
-                )
-            )
-        }
-    }
-
-    fun recordWalkedAway(packageName: String, appName: String) {
-        // Ensure no active token exists
-        activeAllowanceTokens.remove(packageName)
-        Log.i(TAG, "Recorded WALLED AWAY victory for $packageName ($appName)!")
-
-        scope.launch {
-            mindfulDao.insertIntentLog(
-                MindfulIntentLogEntity(
-                    packageName = packageName,
-                    appName = appName,
-                    intentText = "Walked away (Mindful Victory)",
-                    intentCategory = "WALK_AWAY",
-                    allowanceMinutes = 0,
-                    timestamp = System.currentTimeMillis(),
-                    wasWalkedAway = true
-                )
-            )
-        }
+        Log.i(TAG, "Granted $durationMinutes min allowance for $packageName")
     }
 
     fun revokeAllowance(packageName: String) {
@@ -177,10 +138,17 @@ class MindfulRepository @Inject constructor(
         Log.d(TAG, "Mindful session ended for $packageName at ${updated.lastClosedTimestamp}")
     }
 
+    private fun getTodayStartTimestamp(): Long =
+        Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
     // ── CRUD Operations ─────────────────────────────────────────────────────
 
     suspend fun addMindfulApp(packageName: String, appName: String, defaultAllowanceMinutes: Int = 5) {
-        cachedMindfulPackages.add(packageName)
         mindfulDao.insertMindfulApp(
             MindfulAppEntity(
                 packageName = packageName,
@@ -188,34 +156,17 @@ class MindfulRepository @Inject constructor(
                 defaultAllowanceMinutes = defaultAllowanceMinutes
             )
         )
+        cachedMindfulPackages.add(packageName)
     }
 
     suspend fun removeMindfulApp(packageName: String) {
+        mindfulDao.deleteMindfulApp(packageName)
         cachedMindfulPackages.remove(packageName)
         activeAllowanceTokens.remove(packageName)
-        mindfulDao.deleteMindfulApp(packageName)
     }
 
     suspend fun updateAllowanceMinutes(packageName: String, minutes: Int) {
         mindfulDao.updateAllowanceMinutes(packageName, minutes)
     }
 
-    // ── Victory Analytics ───────────────────────────────────────────────────
-
-    fun getTodayStartTimestamp(): Long {
-        return Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
-    }
-
-    fun getTodayWalkedAwayCount(): Flow<Int> {
-        return mindfulDao.getTodayWalkedAwayCount(getTodayStartTimestamp())
-    }
-
-    fun getTodayConsciousOpensCount(): Flow<Int> {
-        return mindfulDao.getTodayConsciousOpensCount(getTodayStartTimestamp())
-    }
 }

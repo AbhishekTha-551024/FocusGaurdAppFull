@@ -202,21 +202,18 @@ object AntiClonerEngine {
                     var verifiedMatch = false
                     for (node in matchedNodes) {
                         val nodePkg = node.packageName?.toString()?.lowercase()
-                        // Ensure node is actively rendered by the suspected package itself (modified APK clone),
-                        // and NOT an orphaned transition node or PiP window from genuine target app!
                         if (nodePkg != null && nodePkg != targetPkg && nodePkg == lowerPkg) {
                             verifiedMatch = true
                             break
                         }
                     }
                     recycleNodes(matchedNodes)
-                    if (verifiedMatch) {
-                        return true
-                    }
+                    if (verifiedMatch) return true
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.d("AntiClonerEngine", "Node check error: ${e.message}")
+            }
         }
-
         return false
     }
 
@@ -238,42 +235,41 @@ object AntiClonerEngine {
         }
 
         // 1. Direct package match for OEM Cloners
-        if (CLONER_PACKAGES.contains(lowerPkg) ||
-            lowerPkg == "com.oplus.multiapp" ||
-            lowerPkg == "com.coloros.oppomultiapp" ||
-            lowerPkg == "com.vivo.doubleinstance" ||
-            lowerPkg == "com.samsung.android.da.daagent" ||
-            lowerPkg == "com.miui.cloner"
-        ) {
-            return true
-        }
+        if (CLONER_PACKAGES.contains(lowerPkg) || lowerPkg == "com.oplus.multiapp" ||
+            lowerPkg == "com.coloros.oppomultiapp" || lowerPkg == "com.vivo.doubleinstance" ||
+            lowerPkg == "com.samsung.android.da.daagent" || lowerPkg == "com.miui.cloner"
+        ) return true
 
         // 2. Class name pattern check
-        if (lowerCls.contains("dualapp") ||
-            lowerCls.contains("apptwin") ||
-            lowerCls.contains("cloneapp") ||
-            lowerCls.contains("appclone") ||
-            lowerCls.contains("secondspace") ||
-            lowerCls.contains("dualmessenger") ||
-            lowerCls.contains("multiapp") ||
-            lowerCls.contains("doubleinstance") ||
-            lowerCls.contains("cloner") ||
+        if (lowerCls.contains("dualapp") || lowerCls.contains("apptwin") || lowerCls.contains("cloneapp") ||
+            lowerCls.contains("appclone") || lowerCls.contains("secondspace") || lowerCls.contains("dualmessenger") ||
+            lowerCls.contains("multiapp") || lowerCls.contains("doubleinstance") || lowerCls.contains("cloner") ||
             lowerCls.contains("parallelapp")
-        ) {
-            return true
-        }
+        ) return true
 
         if (rootNode == null) return false
 
-        // 3. Check for Dual App keywords in settings or security center
-        val isSettingsOrSystem = lowerPkg.contains("settings") ||
-                lowerPkg.contains("security") ||
-                lowerPkg.contains("safecenter") ||
-                lowerPkg.contains("systemui")
+        // 2.5 Exclusion of individual app details screens (e.g. Telegram / WhatsApp App Info)
+        // Individual App Info screens on Vivo / Xiaomi often contain an "App clone" toggle item.
+        // We must NEVER block viewing an individual third-party app's info page unless it is FocusGuard itself.
+        val isAppDetailsScreen = lowerCls.contains("installedappdetails") ||
+                lowerCls.contains("appinfodashboardfragment") ||
+                lowerCls.contains("appinfo") ||
+                lowerCls.contains("appbuttons") ||
+                lowerCls.contains("appdetails") ||
+                lowerCls.contains("appstoragesettings")
 
-        if (!isSettingsOrSystem) {
-            return false
+        if (isAppDetailsScreen) {
+            val isFocusGuard = isFocusGuardAppDetails(rootNode)
+            if (!isFocusGuard) {
+                return false
+            }
         }
+
+        // 3. Check for Dual App keywords in settings or security center
+        val isSettingsOrSystem = lowerPkg.contains("settings") || lowerPkg.contains("security") ||
+                lowerPkg.contains("safecenter") || lowerPkg.contains("systemui")
+        if (!isSettingsOrSystem) return false
 
         for (keyword in DUAL_APP_KEYWORDS) {
             try {
@@ -282,7 +278,9 @@ object AntiClonerEngine {
                     recycleNodes(matchedNodes)
                     return true
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.d("AntiClonerEngine", "Keyword check error: ${e.message}")
+            }
         }
 
         // 4. In settings: If FocusGuard is listed alongside cloning keywords
@@ -298,8 +296,38 @@ object AntiClonerEngine {
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.d("AntiClonerEngine", "FocusGuard check error: ${e.message}")
+        }
 
+        return false
+    }
+
+    /**
+     * Checks if the active App Info screen explicitly belongs to FocusGuard.
+     * Prevents false-positive cloner intercepts when viewing other apps that have an "App clone" toggle.
+     */
+    fun isFocusGuardAppDetails(rootNode: AccessibilityNodeInfo?): Boolean {
+        if (rootNode == null) return false
+        val titleIds = listOf(
+            "com.android.settings:id/entity_header_title",
+            "android:id/title",
+            "com.android.settings:id/app_title",
+            ":id/entity_header_title",
+            ":id/app_name",
+            ":id/title"
+        )
+        for (id in titleIds) {
+            try {
+                val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
+                val matches = nodes.any { node ->
+                    val text = node.text?.toString() ?: ""
+                    text.equals("FocusGuard", ignoreCase = true) || text.equals("com.focusguard.app", ignoreCase = true)
+                }
+                recycleNodes(nodes)
+                if (matches) return true
+            } catch (_: Exception) {}
+        }
         return false
     }
 

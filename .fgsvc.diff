@@ -1,0 +1,694 @@
+warning: in the working copy of 'app/src/main/java/com/focusguard/app/service/FocusGuardAccessibilityService.kt', LF will be replaced by CRLF the next time Git touches it
+diff --git a/app/src/main/java/com/focusguard/app/service/FocusGuardAccessibilityService.kt b/app/src/main/java/com/focusguard/app/service/FocusGuardAccessibilityService.kt
+index b42d395..98ee523 100644
+--- a/app/src/main/java/com/focusguard/app/service/FocusGuardAccessibilityService.kt
++++ b/app/src/main/java/com/focusguard/app/service/FocusGuardAccessibilityService.kt
+@@ -4,7 +4,12 @@ import com.focusguard.app.service.handlers.BlockTrigger
+ import com.focusguard.app.service.handlers.ForegroundSessionTracker
+ import com.focusguard.app.service.handlers.HeartbeatCoordinator
+ import com.focusguard.app.service.handlers.HardBlockHandler
+-import com.focusguard.app.service.handlers.HardBlockResult
++import com.focusguard.app.service.handlers.ActiveOverlayGuard
++import com.focusguard.app.service.handlers.SystemGuardHost
++import com.focusguard.app.service.handlers.SystemGuardPipeline
++import com.focusguard.app.service.handlers.WindowGuardPipeline
++import com.focusguard.app.service.handlers.TargetAppHost
++import com.focusguard.app.service.handlers.TargetAppPipeline
+ import com.focusguard.app.service.handlers.OemScanDetector
+ import com.focusguard.app.service.handlers.ScheduleLimitHandler
+ import com.focusguard.app.service.handlers.ServiceReceiverManager
+@@ -12,11 +17,9 @@ import com.focusguard.app.service.handlers.TamperResponseHandler
+ import com.focusguard.app.service.utils.PackageClassifier
+ import com.focusguard.app.service.utils.ClassNameMatchers
+ import com.focusguard.app.service.utils.AccessibilityServiceDisabler
+-import com.focusguard.app.core.common.constants.Timings
+ 
+ import android.accessibilityservice.AccessibilityService
+ import android.accessibilityservice.AccessibilityServiceInfo
+-import android.app.ActivityManager
+ import android.content.Context
+ import android.content.Intent
+ import android.os.Build
+@@ -25,10 +28,8 @@ import android.view.KeyEvent
+ import android.view.accessibility.AccessibilityEvent
+ import android.view.accessibility.AccessibilityNodeInfo
+ import android.widget.Toast
+-import com.focusguard.app.blockers.AntiClonerEngine
+ import com.focusguard.app.blockers.KeywordBlocker
+ import com.focusguard.app.blockers.MultiWindowGuard
+-import com.focusguard.app.blockers.TimeTamperGuard
+ import com.focusguard.app.core.database.entity.EventType
+ import com.focusguard.app.data.repository.FocusGuardRepository
+ import com.focusguard.app.usage.ScheduleEvaluator
+@@ -56,7 +57,7 @@ private const val TAG = "FocusGuardService"
+  * Intercepts foreground app changes, browser URLs, and settings navigation.
+  */
+ @AndroidEntryPoint
+-class FocusGuardAccessibilityService : AccessibilityService() {
++class FocusGuardAccessibilityService : AccessibilityService(), TargetAppHost, SystemGuardHost {
+ 
+     @Inject
+     lateinit var repository: FocusGuardRepository
+@@ -221,14 +222,68 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+ 
+     private val timestamps = GuardTimestamps()
+ 
++    private val targetAppPipeline by lazy {
++        TargetAppPipeline(
++            host = this,
++            hardBlockHandler = hardBlockHandler,
++            mindfulPauseHandler = mindfulPauseHandler,
++            autoBlockHandler = autoBlockHandler,
++            browserGuardHandler = browserGuardHandler,
++            clonedAppScanHandler = clonedAppScanHandler,
++            reelDetectionHandler = reelDetectionHandler,
++            scheduleLimitHandler = scheduleLimitHandler,
++            keywordDetectionHandler = keywordDetectionHandler,
++            heartbeatCoordinator = heartbeatCoordinator,
++            repository = repository,
++            overlayManager = overlayManager,
++            foregroundSessionTracker = foregroundSessionTracker,
++            timestamps = timestamps,
++            blockedPackages = blockedPackages,
++            scope = scope
++        )
++    }
++
+     // ── OEM SECURITY SCAN SUPPRESSION WINDOW ────────────────────────────────
+     // oemScanSuppressUntil is now a STATIC companion field (see companion object below).
+     // It must be static because Vivo force-unbinds and recreates a NEW service instance;
+     // an instance field would reset to 0 on the new instance, losing the suppression window.
+     // isOemScanWindowActive() reads from the static field, surviving instance restarts.
+ 
++    private val systemGuardPipeline by lazy {
++        SystemGuardPipeline(
++            host = this,
++            repository = repository,
++            sessionBlockManager = sessionBlockManager,
++            launcherDetector = launcherDetector,
++            oemScanDetector = oemScanDetector,
++            timestamps = timestamps
++        )
++    }
++
++    private val activeOverlayGuard by lazy {
++        ActiveOverlayGuard(
++            host = this,
++            repository = repository,
++            sessionBlockManager = sessionBlockManager,
++            overlayManager = overlayManager,
++            packageInstallerHandler = packageInstallerHandler,
++            launcherTargetResolver = launcherTargetResolver,
++            timestamps = timestamps
++        )
++    }
++
++    private val windowGuardPipeline by lazy {
++        WindowGuardPipeline(
++            host = this,
++            windowActions = windowActions,
++            repository = repository,
++            sessionBlockManager = sessionBlockManager,
++            timestamps = timestamps
++        )
++    }
++
+     /** Returns true when we are inside an OEM-initiated transient scan window. */
+-    private fun isOemScanWindowActive(): Boolean =
++    override fun isOemScanWindowActive(): Boolean =
+         android.os.SystemClock.elapsedRealtime() < oemScanSuppressUntilStatic.get()
+ 
+     // Device Admin state caching & refresh handled by DeviceAdminManager (AGENTS Rule 5)
+@@ -255,6 +310,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+     override fun onServiceConnected() {
+         super.onServiceConnected()
+         isServiceRunning = true
++        com.focusguard.app.service.utils.FgDiagnostics.logLifecycleEvent(this, "onServiceConnected")
+         instanceRef = java.lang.ref.WeakReference(this)
+         Log.i(TAG, "AccessibilityService connected.")
+         val now = android.os.SystemClock.elapsedRealtime()
+@@ -462,6 +518,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+     }
+ 
+     override fun onInterrupt() {
++        com.focusguard.app.service.utils.FgDiagnostics.logLifecycleEvent(this, "onInterrupt")
+         Log.w(TAG, "AccessibilityService interrupted by system.")
+         browserHeartbeatTracker.stopHeartbeat()
+         foregroundSessionTracker.cancelForegroundPolling()
+@@ -472,6 +529,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+ 
+     override fun onUnbind(intent: Intent?): Boolean {
+         isServiceRunning = false
++        com.focusguard.app.service.utils.FgDiagnostics.logLifecycleEvent(this, "onUnbind")
+         Log.w(TAG, "AccessibilityService unbound.")
+         browserHeartbeatTracker.stopHeartbeat()
+         foregroundSessionTracker.cancelForegroundPolling()
+@@ -500,6 +558,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+     override fun onDestroy() {
+         super.onDestroy()
+         isServiceRunning = false
++        com.focusguard.app.service.utils.FgDiagnostics.logLifecycleEvent(this, "onDestroy")
+         browserHeartbeatTracker.stopHeartbeat()
+         foregroundSessionTracker.cancelAll()
+         accessibilityStateObserver?.unregister()
+@@ -569,228 +628,25 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+         }
+ 
+         // ── GUARD 1.1: Active Overlay Protection & Interception ─
+-        if (overlayManager.isOverlayShowing) {
+-            val isProtectionActive = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+-            // Dismiss dangerous Settings screens immediately if switched to while overlay is active AND uninstall protection is on
+-            if (PackageClassifier.isSettingsPackage(pkg.lowercase()) && isProtectionActive) {
+-                performGlobalAction(GLOBAL_ACTION_BACK)
+-                performGlobalAction(GLOBAL_ACTION_HOME)
+-                return
+-            }
+-
+-            // 1. Immediately crush any OEM cloner or virtual space launched while overlay is active (ONLY when protection or session is active)
+-            if ((isProtectionActive || sessionBlockManager.isSessionCurrentlyActive()) && AntiClonerEngine.isClonerPackage(pkg)) {
+-                Log.w(TAG, "Cloner launched during overlay -> killing immediately ($pkg)")
+-                performGlobalAction(GLOBAL_ACTION_HOME)
+-                try {
+-                    val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+-                    am?.killBackgroundProcesses(pkg)
+-                } catch (e: Exception) {
+-                    Log.d(TAG, "killBackgroundProcesses error: ${e.message}")
+-                }
+-                triggerBlock(
+-                    sourcePackage = pkg,
+-                    reason = "App Cloner Blocked",
+-                    blockType = OverlayBlockType.CLONER_BLOCK,
+-                    targetName = "App Cloner Blocked",
+-                    description = "App cloning is strictly prohibited."
+-                )
+-                return
+-            }
+-
+-            val overlayRootNode = try { rootInActiveWindow ?: e.source } catch (_: Exception) { null }
+-            try {
+-                if (isProtectionActive) {
+-                    // 2. Immediately dismiss uninstaller dialogs targeting FocusGuard
+-                    val isPotentialUninstallHost = pkg == "android" ||
+-                            pkg == "com.google.android.packageinstaller" ||
+-                            pkg == "com.android.packageinstaller" ||
+-                            pkg == "com.android.permissioncontroller" ||
+-                            pkg == "com.google.android.permissioncontroller"
+-                    if (isPotentialUninstallHost && overlayRootNode != null && packageInstallerHandler.isUninstallConfirmationForFocusGuard(overlayRootNode)) {
+-                        Log.w(TAG, "Uninstall dialog detected during overlay -> dismissing immediately ($pkg)")
+-                        performGlobalAction(GLOBAL_ACTION_BACK)
+-                        performGlobalAction(GLOBAL_ACTION_HOME)
+-                        triggerBlock(
+-                            sourcePackage = pkg,
+-                            reason = "Uninstall Attempt Blocked",
+-                            blockType = OverlayBlockType.UNINSTALL_ATTEMPT,
+-                            targetName = "FocusGuard Uninstall",
+-                            description = "FocusGuard is protected from uninstallation."
+-                        )
+-                        return
+-                    }
+-
+-                    // 3. While block overlay is showing, ignore launcher events entirely
+-                    // UNLESS target resolver confirms FOCUSGUARD and previous overlay was shown > 1500ms ago.
+-                    if (isLauncherPackage(pkg)) {
+-                        val displayMetrics = resources.displayMetrics
+-                        val target = launcherTargetResolver.resolve(
+-                            e = e,
+-                            rootNode = overlayRootNode,
+-                            screenWidth = displayMetrics.widthPixels,
+-                            screenHeight = displayMetrics.heightPixels,
+-                            nowRealtime = android.os.SystemClock.elapsedRealtime()
+-                        )
+-                        val now = android.os.SystemClock.elapsedRealtime()
+-                        if (target == com.focusguard.app.service.handlers.LauncherTarget.FOCUSGUARD && (now - timestamps.lastBlockTimestamp > 1500L)) {
+-                            Log.w(TAG, "Launcher interaction specifically targeting FocusGuard detected during active overlay -> dismissing popup immediately ($pkg)")
+-                            timestamps.lastBlockTimestamp = now
+-                            performGlobalAction(GLOBAL_ACTION_BACK)
+-                        }
+-                        return
+-                    }
+-                }
+-            } finally {
+-                SafeNodeUtils.safeRecycle(overlayRootNode)
+-            }
+-
+-            // 4. SystemUI Notification Shade Pull-down Guard during active overlay
+-            if (pkg == "com.android.systemui") {
+-                val isShade = ClassNameMatchers.isShadeClass(className)
+-                if (isShade) {
+-                    val now = android.os.SystemClock.elapsedRealtime()
+-                    if (now - timestamps.lastShadeCollapseTimestamp > 1000L) {
+-                        timestamps.lastShadeCollapseTimestamp = now
+-                        Log.w(TAG, "Notification shade pull-down intercepted during block overlay -> Collapsing immediately!")
+-                        performGlobalAction(GLOBAL_ACTION_BACK)
+-                    }
+-                }
+-            }
++        if (activeOverlayGuard.process(e = e, pkg = pkg, className = className)) {
+             return
+         }
+ 
+-        // ── GUARD 1.14: Post-Overlay Dismiss Cooldown ────────────────────────
+-        // Prevents rapid back-to-back re-blocking of the same package when an overlay just closed.
+-        // NEVER drop launcher, system packages, settings packages, or cloners!
+         val nowRealtime = android.os.SystemClock.elapsedRealtime()
+-        val isProtectionActiveForCooldown = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+-        val isSessionActiveForCooldown = sessionBlockManager.isSessionCurrentlyActive()
+-        if (nowRealtime - timestamps.lastOverlayDismissTimestamp < Timings.OVERLAY_DISMISS_COOLDOWN_MS &&
+-            pkg == timestamps.lastDismissedPackage &&
+-            !PackageClassifier.isSystemOrLauncherPackage(pkg, launcherDetector, isProtectionActiveForCooldown, isSessionActiveForCooldown) &&
+-            !PackageClassifier.isSettingsPackage(pkg.lowercase()) &&
+-            !AntiClonerEngine.isClonerPackage(pkg)) {
++        if (systemGuardPipeline.process(pkg = pkg, className = className, nowRealtime = nowRealtime)) {
+             return
+         }
+ 
+-        // ── GUARD 1.145: DEEP FOCUS SYSTEMUI SHADE & RECENTS COLLAPSE ───────
+-        // Prevent escaping Deep Focus Kiosk via notification shade, quick settings tiles, or overview
+-        if (sessionBlockManager.isSessionCurrentlyActive() && pkg == "com.android.systemui") {
+-            val isShadeOrRecents = ClassNameMatchers.isShadeOrRecentsClass(className)
+-            if (isShadeOrRecents) {
+-                val now = android.os.SystemClock.elapsedRealtime()
+-                if (now - timestamps.lastShadeCollapseTimestamp > Timings.SHADE_COLLAPSE_THROTTLE_MS) {
+-                    timestamps.lastShadeCollapseTimestamp = now
+-                    Log.w(TAG, "Notification shade / quick settings / recents intercepted during Deep Focus -> Collapsing!")
+-                    performGlobalAction(GLOBAL_ACTION_BACK)
+-                    com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
+-                }
+-                return
+-            }
+-        }
+-
+-        // ── GUARD 1.15: Transient system events (status bar, volume slider, toasts, keyboard) ─
+-        // These events are transient overlays and must NOT disrupt the active foreground app's session timer!
+-        val isProtectionActiveForTransient = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+-        if (PackageClassifier.isTransientSystemPackage(pkg, isProtectionActiveForTransient)) {
+-            return
+-        }
+-
+-        // ── GUARD 1.15a: PREEMPTIVE OEM SECURITY SCAN DETECTION ─────────────
+-        // When events arrive from known OEM security managers (Vivo iManager, Vivo SafeCenter,
+-        // Vivo PermissionManager) we check whether our accessibility service entry is temporarily
+-        // absent from ENABLED_ACCESSIBILITY_SERVICES. If so, it's an OEM scan window -- arm the
+-        // suppression flag immediately so handleSecurityTamper() won't fire HOME during the scan.
+-        if (oemScanDetector.isOemSecurityPackage(pkg) && !isOemScanWindowActive()) {
+-            if (oemScanDetector.isAccessibilityTransientlyOff(contentResolver, packageName)) {
+-                oemScanSuppressUntilStatic.set(android.os.SystemClock.elapsedRealtime() + 12_000L)
+-                Log.i(TAG, "GUARD 1.15a: OEM security manager ($pkg) detected with transient accessibility clear -- scan window armed for 12s")
+-            }
+-        }
+-
+-        // ── GUARD 1.155: ZERO-TOLERANCE ANTI-CLONING & DUAL APPS SHIELD (Layer 1: Cloner Blacklist) ─
+-        // Catches OEM Cloners (com.oplus.multiapp, com.miui.securityadd, com.vivo.doubleinstance, etc.)
+-        // and 3rd-party virtual spaces (Parallel Space, Island, Shelter, etc.).
+-        // Only active when anti-cloning is enabled AND protection or an active focus session is running.
+-        if (repository.isFastAntiCloningShieldEnabled()) {
+-            val isProtectionActive = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+-            val isSessionActive = sessionBlockManager.isSessionCurrentlyActive()
+-            if ((isProtectionActive || isSessionActive) && AntiClonerEngine.isClonerPackage(pkg)) {
+-                val appLabel = getCachedAppLabel(pkg)
+-                Log.w(TAG, "ANTI-CLONING INTERCEPT: Cloner / Virtual Container blocked: $pkg ($appLabel)")
+-                handleSecurityTamper(
+-                    sourcePackage = pkg,
+-                    reason = "App Cloner Blocked: $appLabel",
+-                    targetName = "App Cloning Prohibited",
+-                    customToastMessage = "🚫 App cloning and dual apps are prohibited while FocusGuard protection is active."
+-                )
+-                return
+-            }
+-        }
+-
+-        // ── GUARD 1.16: SYSTEM CLOCK ROLLBACK & TIME TRAVEL TAMPER SHIELD ─────
+-        if (TimeTamperGuard.checkAndValidateTime()) {
+-            val isProtectionActive = isDeviceAdminActive() && repository.isFastUninstallProtectionEnabled()
+-            if (isProtectionActive || sessionBlockManager.isSessionCurrentlyActive()) {
+-                Log.e(TAG, "Clock tampering detected! Triggering security tamper block.")
+-                triggerBlock(
+-                    sourcePackage = pkg,
+-                    reason = "System Clock Tampering Detected",
+-                    blockType = OverlayBlockType.SETTINGS_TAMPER,
+-                    targetName = "Time Manipulation Blocked",
+-                    description = "FocusGuard detected an unauthorized change to the system clock. Clock rollbacks and artificial time jumps are blocked to protect your focus integrity."
+-                )
+-                return
+-            }
+-        }
+-
+         val isPackageChanged = pkg != foregroundSessionTracker.currentPackage
+         val isWindowTransition = e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+ 
+-        // ── GUARD 1.17: MULTI-WINDOW & SPLIT-SCREEN BYPASS GUARD ──────────────
+-        if (isWindowTransition || isPackageChanged) {
+-            val isIntercepted = MultiWindowGuard.checkAndInterceptMultiWindow(
+-                service = this,
+-                repository = repository,
+-                sessionBlockManager = sessionBlockManager,
+-                onIntercept = { sourcePkg, reason, targetName, desc ->
+-                    if (sessionBlockManager.isSessionCurrentlyActive()) {
+-                        windowActions.triggerBlockHaptic()
+-                        com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
+-                        windowActions.dismissUnauthorizedAppInDeepFocus(sourcePkg)
+-                    } else {
+-                        val appLabel = getCachedAppLabel(sourcePkg)
+-                        triggerBlock(
+-                            sourcePackage = sourcePkg,
+-                            reason = reason,
+-                            blockType = OverlayBlockType.APP_BLOCK,
+-                            targetName = if (targetName == sourcePkg) appLabel else targetName,
+-                            description = desc
+-                        )
+-                    }
+-                }
+-            )
+-            if (isIntercepted) return
+-        }
+-
+-        // ── GUARD 1.18: DEEP FOCUS LOCKDOWN (#blockit Engine) STRICT KIOSK ENFORCEMENT ──
+-        // When Deep Focus session is active, the device operates as a zero-bypass kiosk.
+-        // All Home Launchers, App Drawers, System Settings, App Stores, and non-suitcase apps
+-        // are intercepted instantly (< 0.01ms) and redirected directly to SessionLockActivity.
+-        if (sessionBlockManager.isSessionCurrentlyActive()) {
+-            val isBlockedInSession = sessionBlockManager.isPackageBlockedInSession(pkg)
+-            if (isBlockedInSession) {
+-                val nowRt = android.os.SystemClock.elapsedRealtime()
+-                if (nowRt - timestamps.lastDeepFocusReassertTimestamp > 40L) {
+-                    timestamps.lastDeepFocusReassertTimestamp = nowRt
+-                    Log.w(TAG, "DEEP FOCUS INTERCEPT: Unauthorized app/launcher blocked: $pkg -> Reasserting Kiosk Lock Screen")
+-                    windowActions.triggerBlockHaptic()
+-                    com.focusguard.app.feature.session.ui.SessionLockActivity.start(this)
+-                    windowActions.dismissUnauthorizedAppInDeepFocus(pkg)
+-                }
+-                return
+-            }
++        if (windowGuardPipeline.process(
++                pkg = pkg,
++                isPackageChanged = isPackageChanged,
++                isWindowTransition = isWindowTransition,
++                nowRealtime = nowRealtime
++            )) {
++            return
+         }
+ 
+         // ── PROTECTION STATE RESOLUTION (<0.001ms cached atomic lookup) ───────
+@@ -906,7 +762,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+         // ── 5. TARGET APPLICATIONS (Blocked Apps, Limits, Reels, Browsers, Keywords) ─
+         val rootNode = try { rootInActiveWindow ?: e.source } catch (_: Exception) { null }
+         try {
+-            processTargetAppEvent(
++            targetAppPipeline.processEvent(
+                 rootNode = rootNode,
+                 e = e,
+                 pkg = pkg,
+@@ -914,223 +770,13 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+                 nowRealtime = nowRealtime,
+                 isPackageChanged = isPackageChanged,
+                 isWindowTransition = isWindowTransition,
+-                protectionWanted = protectionWanted,
+-                isDeviceAdminCurrentlyActive = isDeviceAdminCurrentlyActive
++                protectionWanted = protectionWanted
+             )
+         } finally {
+             SafeNodeUtils.safeRecycle(rootNode)
+         }
+     }
+ 
+-    // Specialized domain handlers delegated to service/handlers/* (LauncherEventHandler, SettingsEventHandler, PackageInstallerHandler)
+-
+-    private fun processTargetAppEvent(
+-        rootNode: AccessibilityNodeInfo?,
+-        e: AccessibilityEvent,
+-        pkg: String,
+-        className: String,
+-        nowRealtime: Long,
+-        isPackageChanged: Boolean,
+-        isWindowTransition: Boolean,
+-        protectionWanted: Boolean,
+-        isDeviceAdminCurrentlyActive: Boolean
+-    ) {
+-        // Monotonic Debounce to avoid multi-triggering overlay in same transition
+-        if (!isPackageChanged && (nowRealtime - timestamps.lastBlockTimestamp < Timings.TRANSITION_DEBOUNCE_MS)) return
+-
+-        // Manage In-Foreground package transitions
+-        if (isPackageChanged) {
+-            foregroundSessionTracker.onPackageChanged(pkg, nowRealtime)
+-            heartbeatCoordinator.updateHeartbeat(
+-                pkg = pkg,
+-                scope = scope,
+-                isOverlayShowing = { overlayManager.isOverlayShowing },
+-                rootProvider = { rootInActiveWindow },
+-                getCachedAppLabel = { getCachedAppLabel(it) },
+-                onTriggerBlock = { sourcePkg, reason, blockType, targetName, desc ->
+-                    triggerBlock(
+-                        sourcePackage = sourcePkg,
+-                        reason = reason,
+-                        blockType = blockType,
+-                        targetName = targetName,
+-                        description = desc
+-                    )
+-                }
+-            )
+-        }
+-
+-        // ── 1. FAST-PATH: INSTANT HARD APP BLOCKER, EXCEEDED TIME LIMITS & SCHEDULES (0ms latency) ─
+-        val hardBlockResult = hardBlockHandler.checkHardBlock(
+-            pkg = pkg,
+-            className = className,
+-            eventType = e.eventType,
+-            nowRealtime = nowRealtime,
+-            blockedPackages = blockedPackages,
+-            getCachedAppLabel = ::getCachedAppLabel
+-        )
+-        val isHardBlocked = when (hardBlockResult) {
+-            is HardBlockResult.Block -> {
+-                timestamps.lastBlockTimestamp = nowRealtime
+-                Log.i(TAG, "Instant 0ms Block triggered for $pkg (${hardBlockResult.targetName}) [isLimit=${hardBlockResult.isLimit}, isSched=${hardBlockResult.isSched}]")
+-                triggerBlock(
+-                    sourcePackage = pkg,
+-                    reason = hardBlockResult.reason,
+-                    blockType = hardBlockResult.blockType,
+-                    targetName = hardBlockResult.targetName,
+-                    description = hardBlockResult.description
+-                )
+-                return
+-            }
+-            is HardBlockResult.HardBlockedButAllowed -> true
+-            is HardBlockResult.Clear -> false
+-        }
+-
+-        // ── 1.2 MINDFUL PAUSE INTERCEPT (Conscious Breathing & Intent Delay) ─
+-        if (mindfulPauseHandler.shouldIntercept(pkg, isHardBlocked, isPackageChanged, isWindowTransition)) {
+-            val appLabel = getCachedAppLabel(pkg)
+-            timestamps.lastBlockTimestamp = nowRealtime
+-            mindfulPauseHandler.showMindfulPause(
+-                pkg = pkg,
+-                appLabel = appLabel,
+-                isForegroundPackage = { foregroundSessionTracker.currentPackage == pkg },
+-                onTriggerBlock = { sourcePkg, reason, blockType, targetName, desc ->
+-                    triggerBlock(
+-                        sourcePackage = sourcePkg,
+-                        reason = reason,
+-                        blockType = blockType,
+-                        targetName = targetName,
+-                        description = desc
+-                    )
+-                },
+-                onForceClose = { windowActions.forceCloseApp(it) }
+-            )
+-            return
+-        }
+-
+-        // ── 1.5 AUTO-BLOCK NEW APPS JIT INTERCEPT (Catches recently installed apps on open) ─
+-        val autoBlockAction = autoBlockHandler.checkAutoBlock(
+-            pkg = pkg,
+-            isHardBlocked = isHardBlocked,
+-            getCachedAppLabel = { getCachedAppLabel(it) },
+-            scope = scope
+-        )
+-        if (autoBlockAction != null) {
+-            timestamps.lastBlockTimestamp = nowRealtime
+-            triggerBlock(
+-                sourcePackage = pkg,
+-                reason = "Auto-Blocked New App: ${autoBlockAction.appLabel}",
+-                blockType = OverlayBlockType.APP_BLOCK,
+-                targetName = autoBlockAction.appLabel,
+-                description = "This newly installed app was automatically blocked by FocusGuard. You can review and unblock it in the app."
+-            )
+-            return
+-        }
+-
+-        // ── 1.6 UNSUPPORTED BROWSER GUARD (Kills Unknown Browser Loophole) ─
+-        val unsupportedBrowserAction = browserGuardHandler.checkUnsupportedBrowser(
+-            pkg = pkg,
+-            getCachedAppLabel = { getCachedAppLabel(it) }
+-        )
+-        if (unsupportedBrowserAction != null) {
+-            timestamps.lastBlockTimestamp = nowRealtime
+-            triggerBlock(
+-                sourcePackage = pkg,
+-                reason = "Unsupported Browser Blocked: ${unsupportedBrowserAction.appLabel}",
+-                blockType = OverlayBlockType.APP_BLOCK,
+-                targetName = unsupportedBrowserAction.appLabel,
+-                description = "Unsupported browser detected. FocusGuard only permits verified browsers (Chrome, Firefox, Brave, Opera, DuckDuckGo, Tor, Vivaldi, Spin, 1DM, Ecosia) for safe filtering."
+-            )
+-            return
+-        }
+-
+-        // ── ANTI-CLONING: STRUCTURAL CLONED TARGET VIEW ID SCAN (Layer 2) ─
+-        val clonedAppAction = clonedAppScanHandler.checkClonedTarget(
+-            rootNode = rootNode,
+-            pkg = pkg,
+-            isProtectionWanted = protectionWanted,
+-            getCachedAppLabel = { getCachedAppLabel(it) }
+-        )
+-        if (clonedAppAction != null) {
+-            timestamps.lastBlockTimestamp = nowRealtime
+-            triggerBlock(
+-                sourcePackage = pkg,
+-                reason = "Cloned Distraction App Blocked: ${clonedAppAction.appLabel}",
+-                blockType = OverlayBlockType.CLONER_BLOCK,
+-                targetName = "Cloned App (${clonedAppAction.appLabel})",
+-                description = "Target app views were detected running inside an unverified container or modified APK clone."
+-            )
+-            return
+-        }
+-
+-        // ── 1.8 ULTRA-FAST REELS INTERCEPT (< 1ms Fast Path, Zero Latency) ─
+-        val reelAction = reelDetectionHandler.detectReelOrShort(
+-            e = e,
+-            rootNode = rootNode,
+-            pkg = pkg,
+-            isDebounceElapsed = (nowRealtime - timestamps.lastBlockTimestamp >= 800L),
+-            isOverlayShowing = overlayManager.isOverlayShowing
+-        )
+-        if (reelAction != null) {
+-            timestamps.lastBlockTimestamp = nowRealtime
+-            Log.i(TAG, "Ultra-fast ${reelAction.targetLabel} block triggered for $pkg")
+-            triggerBlock(
+-                sourcePackage = pkg,
+-                reason = "${reelAction.targetLabel} Blocked",
+-                blockType = OverlayBlockType.SHORT_OR_REEL_BLOCK,
+-                targetName = reelAction.targetLabel,
+-                description = reelAction.targetDesc
+-            )
+-            return
+-        }
+-
+-        // ── 2. FOCUS SCHEDULES & TIME LIMITS (Evaluated only on window transition) ─
+-        if ((isPackageChanged || isWindowTransition) && repository.hasActiveSchedulesOrLimits(pkg)) {
+-            val appLabel = getCachedAppLabel(pkg)
+-
+-            scope.launch {
+-                val liveSessionMs = foregroundSessionTracker.liveSessionMs(android.os.SystemClock.elapsedRealtime())
+-                scheduleLimitHandler.handleScheduleOrLimit(
+-                    pkg = pkg,
+-                    appLabel = appLabel,
+-                    liveSessionMs = liveSessionMs,
+-                    isOverlayShowing = { overlayManager.isOverlayShowing },
+-                    getLastBlockTimestamp = { timestamps.lastBlockTimestamp },
+-                    clock = { android.os.SystemClock.elapsedRealtime() },
+-                    onUpdateLastBlockTimestamp = { timestamps.lastBlockTimestamp = it },
+-                    onTriggerBlock = { sourcePkg, reason, blockType, targetName, description ->
+-                        triggerBlock(
+-                            sourcePackage = sourcePkg,
+-                            reason = reason,
+-                            blockType = blockType,
+-                            targetName = targetName,
+-                            description = description
+-                        )
+-                    },
+-                    onStartForegroundPolling = { p, label ->
+-                        foregroundSessionTracker.startForegroundPollingIfTracked(p, label)
+-                    }
+-                )
+-            }
+-        }
+-
+-        // ── 3. KEYWORD & CONTENT BLOCKING (Browsers, YouTube On-Screen Metadata, and Universal Apps) ─
+-        val keywordHandled = keywordDetectionHandler.detectAndHandle(
+-            e = e,
+-            rootNode = rootNode,
+-            pkg = pkg,
+-            getCachedAppLabel = { getCachedAppLabel(it) },
+-            triggerBlock = { sourcePkg, reason, blockType, targetName, description ->
+-                triggerBlock(
+-                    sourcePackage = sourcePkg,
+-                    reason = reason,
+-                    blockType = blockType,
+-                    targetName = targetName,
+-                    description = description
+-                )
+-            }
+-        )
+-        if (keywordHandled) return
+-    }
+ 
+ 
+     // ─────────────────────────────────────────────────────────────────────────
+@@ -1156,12 +802,12 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+      * causing launcher flicker on MIUI/ColorOS/FuntouchOS. We use
+      * triggerBlockWithHomeAlreadySent() to suppress the redundant HOME inside forceCloseApp().
+      */
+-    private fun handleSecurityTamper(
++    override fun handleSecurityTamper(
+         sourcePackage: String,
+         reason: String,
+         targetName: String,
+-        blockType: OverlayBlockType = OverlayBlockType.SETTINGS_TAMPER,
+-        customToastMessage: String? = null
++        blockType: OverlayBlockType,
++        customToastMessage: String?
+     ) {
+         tamperResponseHandler.handleSecurityTamper(
+             sourcePackage = sourcePackage,
+@@ -1226,15 +872,29 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+     }
+ 
+     // ─────────────────────────────────────────────────────────────────────────
+-    // Trigger Block with Custom Contextual Details
++    // TargetAppHost Implementation
+     // ─────────────────────────────────────────────────────────────────────────
+ 
+-    private fun triggerBlock(
++    override fun currentRoot(): AccessibilityNodeInfo? = rootInActiveWindow
++
++    override fun cachedAppLabel(pkg: String): String = getCachedAppLabel(pkg)
++
++    override fun forceCloseApp(pkg: String) {
++        windowActions.forceCloseApp(pkg)
++    }
++
++    override fun context(): Context = this
++
++    override fun service(): AccessibilityService = this
++
++    override fun isOverlayShowing(): Boolean = overlayManager.isOverlayShowing
++
++    override fun triggerBlock(
+         sourcePackage: String,
+         reason: String,
+-        blockType: OverlayBlockType = OverlayBlockType.UNINSTALL_ATTEMPT,
+-        targetName: String = "FocusGuard Protection",
+-        description: String = "Action is protected by friction delay."
++        blockType: OverlayBlockType,
++        targetName: String,
++        description: String
+     ) {
+         blockTrigger.triggerBlock(
+             sourcePackage = sourcePackage,
+@@ -1245,7 +905,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+         )
+     }
+ 
+-    private fun isLauncherPackage(pkg: String): Boolean {
++    override fun isLauncherPackage(pkg: String): Boolean {
+         val launcherPackage = launcherDetector.getCurrentLauncherPackage()
+         val lower = pkg.lowercase()
+         return (launcherPackage != null && lower == launcherPackage.lowercase()) ||
+@@ -1274,7 +934,7 @@ class FocusGuardAccessibilityService : AccessibilityService() {
+      * Zero-latency device admin check -- delegates to [DeviceAdminManager] cache refreshed every 30 s.
+      * Never makes a Binder IPC call on the hot accessibility-event path (AGENTS Rule 5).
+      */
+-    private fun isDeviceAdminActive(): Boolean = deviceAdminManager.isDeviceAdminActive()
++    override fun isDeviceAdminActive(): Boolean = deviceAdminManager.isDeviceAdminActive()
+ 
+     companion object {
+         /**

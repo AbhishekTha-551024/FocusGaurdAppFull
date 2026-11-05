@@ -13,16 +13,17 @@
 
 ### 1. Emergency Support Code Generator
 - **Cryptographic PIN Calculation:** Generates 6-digit numeric rescue PINs matching FocusGuard's on-device `SupportCodeEngine.kt`.
-- **Time-Windowed Daily Security:** Codes automatically rotate and expire at midnight local time (`YYYY-MM-DD`).
+- **Time-Windowed Rotation:** A code is signed for one `YYYY-MM-DD` date. The phone accepts it while that date is inside its grace window (yesterday / today / UTC-today / tomorrow) — not "until midnight" — and the local single-use ledger rejects it once applied.
 - **Granular Action Targeting:**
   - `101`: Deactivate Device Admin & Uninstall Protection
   - `102`: Reset Active Challenge Lock
+  - `103`: Reset Time-Tamper (clock rollback) Lock
   - `201`: Emergency Unblock of a specific package
   - `202`: Emergency Removal of a blocked keyword/domain
   - `203`: Disable Shorts & Reels filtering
   - `301`: Reset Daily Consumed Time Limit
   - `999`: Master Emergency Reset
-- **One-Click WhatsApp Template:** Formats and copies a customer support reply message in one tap.
+- **One-Click WhatsApp Template:** Formats and copies a customer support reply message in one tap, including the per-action scope warning for the destructive codes (`101`, `999`).
 
 ### 2. Accountability Partner Administration (Tier 2 Cloud Hard Mode)
 - **Firebase Firestore Linkage:** Real-time synchronization with client partnership documents (`partnerships` collection).
@@ -31,7 +32,7 @@
 
 ### 3. Security Event Monitoring
 - **Tamper Alarms:** View reported clock rollback attempts, multi-window split bypasses, and package uninstallation attempts.
-- **Watchdog Health:** Monitor service heartbeats and ensure client accessibility services are active.
+- **Watchdog Health:** View client heartbeat records and whether the accessibility service reported itself active. (The on-device `ProtectionWatchdogService` is retired; recovery is handled by `AccessibilityHealthWorker` and the a11y self-heal path.)
 
 ---
 
@@ -80,10 +81,53 @@ npm run preview
 
 ---
 
-## 🔒 Security & Deployment Architecture
+## 🔒 Security model
 
-1. **Client vs Server Secrets:**
-   - For local development and emergency testing, HMAC calculations run in the browser using the shared master secret.
-   - For public-facing production, code generation should be proxied through authenticated **Firebase Cloud Functions** to prevent exposure of master keys in client-side bundles.
-2. **Access Control:**
-   - In production, restrict access to authorized support agent accounts using Firebase Auth with custom admin claims.
+**Setup (required before anything can be signed).** Copy `.env.example` to `.env` and fill in
+`VITE_SUPPORT_MASTER_SECRET` — the exact same value as `support.master.secret` in the app's
+`local.properties` — plus `VITE_ADMIN_EMAILS` with the Google addresses allowed to open the console.
+`.env` is git-ignored. Without the secret the panel refuses to generate (it will not fall back to a
+default, because a code signed with the wrong secret looks perfectly valid here and simply fails on
+every phone); without an allowlist it fails closed on the sign-in screen.
+
+**What the code does today.**
+
+1. **Operator gate** (`src/App.jsx`): Firebase Google sign-in plus an email allowlist from
+   `VITE_ADMIN_EMAILS`. The console, device monitor and ticket queue render only after both pass.
+2. **Attribution**: audit entries and ticket resolutions record the signed-in admin's email. If no
+   session is present they write `UNATTRIBUTED` instead of a canned address.
+3. **No PIN in the cloud**: `recordAuditLog` strips `code` before the Firestore write and stores
+   `codeFingerprint` instead — the same SHA-256 identity the app's single-use ledger keeps. The raw
+   PIN stays in this browser's `localStorage`, which is also what the Audit Trail tab reads.
+   Resolved support tickets follow the same rule (`responseCodeFingerprint`).
+4. **Honest validity wording**: codes are signed for a date and accepted by the app across a
+   yesterday/today/UTC-today/tomorrow window, so templates and the result card say that instead of
+   "expires at midnight", and say that a code is single-use.
+5. **Date and Device-ID guards**: the date picker is clamped to the accepted window, malformed
+   `FG-XXXX-XXXX` IDs are flagged before sending, and the accepted-date list is printed under the
+   picker.
+
+**Limits that are NOT solved by this panel — read before deploying anywhere.**
+
+- Vite inlines every `VITE_*` value into the shipped JavaScript. **Publishing this panel to a public
+  URL leaks the master secret to anyone who views source.** Run it with `npm run dev` on the
+  operator machine. The permanent fix is a Firebase Cloud Function that holds the secret server-side
+  and returns only the PIN to an authenticated admin — the panel is already structured so that
+  `generateSupportCode` can be swapped for a single function call.
+- The allowlist check runs in the browser. It stops casual access; it does not stop someone who
+  loads the Firebase config in their own script. Firestore security rules are the real boundary and
+  are **not stored in this repository** — they must be reviewed in the Firebase console.
+- Anyone with a device's ID plus the secret can compute working codes for it offline. That is
+  inherent to a zero-server design; it is mitigated by the single-use ledger and the attempt
+  cooldown on the phone, not eliminated.
+
+**Parity check** (Kotlin engine ⇄ this generator, run from `admin-panel/`):
+
+```bash
+node scripts/support-code-parity.check.mjs
+```
+
+It asserts the fixed vectors kept in
+`app/src/test/java/com/focusguard/app/security/SupportCodeEngineTest.kt`. Run it after touching
+`src/crypto/codeGenerator.js` or `SupportCodeEngine.kt` — the two implementations must change in the
+same commit.

@@ -1,6 +1,6 @@
 package com.focusguard.app.data.repository
 
-import com.focusguard.app.data.db.BlockedAppEntity
+import com.focusguard.app.core.database.entity.BlockedAppEntity
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton

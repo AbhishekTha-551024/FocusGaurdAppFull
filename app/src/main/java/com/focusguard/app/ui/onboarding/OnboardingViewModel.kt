@@ -7,12 +7,13 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.focusguard.app.commitment.CommitmentRestoreEngine
+import com.focusguard.app.commitment.CommitmentRestoreStatus
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.usage.UsageStatsReader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -25,8 +26,15 @@ import javax.inject.Inject
 class OnboardingViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: FocusGuardRepository,
-    private val usageStatsReader: UsageStatsReader
+    private val usageStatsReader: UsageStatsReader,
+    commitmentRestoreEngine: CommitmentRestoreEngine
 ) : ViewModel() {
+
+    /**
+     * First-run gate source: the process-wide reinstall-restore pass. Exposed as-is (no mapping) so
+     * the UI and the engine can never disagree about whether the gate is still owed.
+     */
+    val commitmentRestoreStatus: StateFlow<CommitmentRestoreStatus> = commitmentRestoreEngine.status
 
     val isOnboardingComplete: StateFlow<Boolean> = repository.isOnboardingComplete
         .stateIn(
@@ -77,7 +85,7 @@ class OnboardingViewModel @Inject constructor(
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
-        return com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityActive(context)
+        return com.focusguard.app.recovery.AccessibilityRecoveryHelper.isAccessibilityConfiguredInSettings(context)
     }
 
     private fun isDeviceAdminActive(): Boolean {

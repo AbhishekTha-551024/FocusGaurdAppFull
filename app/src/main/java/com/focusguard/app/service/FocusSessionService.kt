@@ -33,7 +33,7 @@ class FocusSessionService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "channel_focus_session_lock"
-        private const val NOTIFICATION_ID = 4040
+        private const val NOTIFICATION_ID = com.focusguard.app.core.common.constants.NotificationIds.ID_FOCUS_SESSION_ONGOING
         private const val COMPLETION_NOTIFICATION_ID = 4041
 
         const val ACTION_START_SESSION = "com.focusguard.app.action.START_SESSION"
@@ -106,7 +106,7 @@ class FocusSessionService : Service() {
     }
 
     private fun buildNotification(remainingMins: Int): Notification {
-        val openIntent = Intent(this, com.focusguard.app.ui.session.SessionLockActivity::class.java).apply {
+        val openIntent = Intent(this, com.focusguard.app.feature.session.ui.SessionLockActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pendingIntent = PendingIntent.getActivity(

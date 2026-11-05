@@ -22,4 +22,6 @@ recovered_*.txt
 *.aab
 .kotlin/
 scratch/
+node_modules/
+dist/
 

@@ -41,32 +41,52 @@ object MultiWindowGuard {
             null
         } ?: return false
 
-        // Determine if multi-window / split-screen is active
-        var appWindowCount = 0
+        // Collect application windows once. TYPE_APPLICATION also contains the launcher window
+        // that sits behind EVERY normal foreground app, so counting raw application windows
+        // made a single full-screen app look like split-screen on every windows-changed event.
+        // That re-triggered the block and remounted the shield in a loop.
+        val applicationWindows = ArrayList<AccessibilityWindowInfo>(4)
         var hasPip = false
         for (w in windows) {
-            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
-                appWindowCount++
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    try {
-                        val method = AccessibilityWindowInfo::class.java.getMethod("isInPictureInPicture")
-                        if (method.invoke(w) == true) {
-                            hasPip = true
-                        }
-                    } catch (_: Exception) {}
+            if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+            applicationWindows.add(w)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    val method = AccessibilityWindowInfo::class.java.getMethod("isInPictureInPicture")
+                    if (method.invoke(w) == true) {
+                        hasPip = true
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.d("MultiWindowGuard", "isInPictureInPicture reflection error: ${e.message}")
                 }
             }
         }
 
-        val isMultiWindowActive = appWindowCount >= 2 || hasPip
+        val ownPkg = service.packageName
+
+        // Multi-window is only real when at least two DIFFERENT third-party packages have
+        // TOP-LEVEL windows (or a PiP window exists). Child/embedded windows belong to the app
+        // that owns them, and a null root cannot prove a second app, so neither is counted.
+        val distinctAppPackages = HashSet<String>()
+        for (w in applicationWindows) {
+            val parent = try { w.parent } catch (_: Exception) { null }
+            if (parent != null) continue
+            val rootNode = try { w.root } catch (_: Exception) { null }
+            val pkg = try { rootNode?.packageName?.toString() } catch (_: Exception) { null }
+            SafeNodeUtils.safeRecycle(rootNode)
+            if (pkg.isNullOrBlank()) continue
+            if (isSkippableWindowPackage(pkg, ownPkg)) continue
+            distinctAppPackages.add(pkg.lowercase())
+        }
+
+        val isMultiWindowActive = distinctAppPackages.size >= 2 || hasPip
         if (!isMultiWindowActive) {
             return false
         }
 
         val isSessionActive = sessionBlockManager.isSessionCurrentlyActive()
-        val ownPkg = service.packageName
 
-        for (window in windows) {
+        for (window in applicationWindows) {
             if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
 
             val rootNode = window.root ?: continue
@@ -76,7 +96,7 @@ object MultiWindowGuard {
                 if (pkg == ownPkg || pkg.startsWith("com.focusguard.app")) continue
                 // System UI (status bar / nav bar controls)
                 val lowerPkg = pkg.lowercase()
-                if (lowerPkg == "com.android.systemui" || lowerPkg == "android") continue
+                if (lowerPkg == com.focusguard.app.core.common.constants.OemPackages.SYSTEM_UI || lowerPkg == "android") continue
 
                 // When Deep Focus is NOT active, skip launchers (launchers are handled by normal blocker)
                 if (!isSessionActive && (lowerPkg.contains("launcher") || lowerPkg.contains("quickstep") ||
@@ -133,6 +153,21 @@ object MultiWindowGuard {
             }
         }
 
+        return false
+    }
+
+    /**
+     * Windows that can never represent a second, bypassing app in a split-screen pair:
+     * FocusGuard itself, SystemUI, launchers and IMEs.
+     */
+    private fun isSkippableWindowPackage(pkg: String, ownPkg: String): Boolean {
+        val lower = pkg.lowercase()
+        if (pkg == ownPkg || lower.startsWith("com.focusguard.app")) return true
+        if (lower == com.focusguard.app.core.common.constants.OemPackages.SYSTEM_UI || lower == "android") return true
+        if (lower.contains("launcher") || lower.contains("quickstep") ||
+            lower.contains("trebuchet") || lower == "com.bbk.launcher2"
+        ) return true
+        if (lower.contains("inputmethod") || lower.contains("keyboard")) return true
         return false
     }
 }

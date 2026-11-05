@@ -7,7 +7,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
-import com.focusguard.app.data.datastore.FocusGuardPreferences
+import com.focusguard.app.core.datastore.FocusGuardPreferences
 import com.focusguard.app.receiver.FocusGuardDeviceAdminReceiver
 import com.focusguard.app.utils.BatteryOptimizationHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +19,7 @@ import javax.inject.Singleton
 
 data class ProtectionPermissionStatus(
     val isAccessibilityGranted: Boolean = false,
+    val isAccessibilityServiceConnected: Boolean = false,
     val isOverlayGranted: Boolean = false,
     val isDeviceAdminGranted: Boolean = false,
     val isUsageAccessGranted: Boolean = false,
@@ -29,7 +30,7 @@ data class ProtectionPermissionStatus(
     val pendingCount: Int
         get() {
             var count = 0
-            if (!isAccessibilityGranted) count++
+            if (!isAccessibilityGranted || !isAccessibilityServiceConnected) count++
             if (!isOverlayGranted) count++
             if (!isDeviceAdminGranted) count++
             if (!isUsageAccessGranted) count++
@@ -97,6 +98,7 @@ class PermissionStatusRepository @Inject constructor(
 
     fun computeStatus(): ProtectionPermissionStatus {
         val isA11y = capabilityManager.isAccessibilityGranted()
+        val isAccessibilityConnected = capabilityManager.isAccessibilityServiceConnected()
         val isOverlay = capabilityManager.isOverlayGranted()
         val isAdmin = capabilityManager.isDeviceAdminGranted()
         val isUsage = capabilityManager.isUsageAccessGranted()
@@ -111,6 +113,7 @@ class PermissionStatusRepository @Inject constructor(
 
         return ProtectionPermissionStatus(
             isAccessibilityGranted = isA11y,
+            isAccessibilityServiceConnected = isAccessibilityConnected,
             isOverlayGranted = isOverlay,
             isDeviceAdminGranted = isAdmin,
             isUsageAccessGranted = isUsage,

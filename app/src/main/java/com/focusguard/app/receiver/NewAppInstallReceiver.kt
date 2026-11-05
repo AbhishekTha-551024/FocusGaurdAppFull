@@ -7,23 +7,31 @@ import android.util.Log
 import com.focusguard.app.data.repository.AppBlockingRepository
 import com.focusguard.app.data.repository.DataStoreRepository
 import com.focusguard.app.domain.usecase.GetInstalledAppsUseCase
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import javax.inject.Singleton
 
 private const val TAG = "NewAppInstallReceiver"
 
-@Singleton
-class NewAppInstallReceiver @Inject constructor(
-    private val dataStoreRepository: DataStoreRepository,
-    private val appBlockingRepository: AppBlockingRepository,
-    private val getInstalledAppsUseCase: GetInstalledAppsUseCase
-) : BroadcastReceiver() {
+@AndroidEntryPoint
+class NewAppInstallReceiver : BroadcastReceiver() {
 
-    private val receiverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Inject
+    lateinit var dataStoreRepository: DataStoreRepository
+
+    @Inject
+    lateinit var appBlockingRepository: AppBlockingRepository
+
+    @Inject
+    lateinit var getInstalledAppsUseCase: GetInstalledAppsUseCase
+
+    private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled coroutine exception in NewAppInstallReceiver", throwable)
+    }
+    private val receiverScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + coroutineExceptionHandler)
 
     override fun onReceive(context: Context, intent: Intent?) {
         Log.i(TAG, "onReceive triggered: action=${intent?.action}, data=${intent?.data}")

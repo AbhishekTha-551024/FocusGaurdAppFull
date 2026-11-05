@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.focusguard.app.data.db.EventType
+import com.focusguard.app.core.database.entity.EventType
 import com.focusguard.app.data.repository.FocusGuardRepository
 import com.focusguard.app.usage.UsageStatsReader
 import dagger.hilt.EntryPoint

@@ -5,6 +5,7 @@ import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.focusguard.app.blockers.KeywordBlocker
+import com.focusguard.app.data.repository.isShortFormContentBlocked
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -81,13 +82,7 @@ class BrowserHeartbeatTracker @Inject constructor(
 
                 try {
                     // 0. Instant YouTube Shorts & Reels Detection during active playback
-                    val isPlatformBlocked = when (packageName) {
-                        com.focusguard.app.blockers.ReelBlocker.INSTAGRAM_PACKAGE -> repository.isFastInstagramReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        com.focusguard.app.blockers.ReelBlocker.FACEBOOK_PACKAGE,
-                        com.focusguard.app.blockers.ReelBlocker.FACEBOOK_LITE_PACKAGE -> repository.isFastFacebookReelsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        com.focusguard.app.blockers.ReelBlocker.YOUTUBE_PACKAGE -> repository.isFastYouTubeShortsBlockEnabled() || repository.isFastShortsReelsBlockEnabled()
-                        else -> repository.isFastShortsReelsBlockEnabled()
-                    }
+                    val isPlatformBlocked = repository.isShortFormContentBlocked(packageName)
                     if (reelBlocker.isTargetPackage(packageName) && isPlatformBlocked) {
                         val isShortsOrReels = reelBlocker.isReelsOrShortsDetected(
                             e = null,
@@ -117,7 +112,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                                 if (repository.isFastAdultContentBlockEnabled()) {
                                     val adultViolation = adultContentShield.checkViolation(item.text)
                                     if (adultViolation != null) {
-                                        Log.i(TAG, "Heartbeat caught adult violation in YouTube: '${adultViolation.matchedTerm}'")
+                                        Log.i(TAG, "Heartbeat caught adult content violation in YouTube ($packageName)")
                                         withContext(Dispatchers.Main) {
                                             onViolation(packageName, "Adult Content", item.text)
                                         }
@@ -126,7 +121,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                                 }
                                 val matched = keywordBlocker.isViolationDetectedSync(item.text)
                                 if (matched != null) {
-                                    Log.i(TAG, "Heartbeat caught YouTube violation: '$matched' in '${item.text}'")
+                                    Log.i(TAG, "Heartbeat caught keyword violation in YouTube ($packageName)")
                                     withContext(Dispatchers.Main) {
                                         onViolation(packageName, matched, item.text)
                                     }
@@ -141,7 +136,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                                 if (repository.isFastAdultContentBlockEnabled()) {
                                     val adultViolation = adultContentShield.checkViolation(str)
                                     if (adultViolation != null) {
-                                        Log.i(TAG, "Heartbeat caught adult violation in browser: '${adultViolation.matchedTerm}'")
+                                        Log.i(TAG, "Heartbeat caught adult content violation in browser ($packageName)")
                                         withContext(Dispatchers.Main) {
                                             onViolation(packageName, "Adult Content", str)
                                         }
@@ -150,7 +145,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                                 }
                                 val matched = keywordBlocker.isViolationDetectedSync(str)
                                 if (matched != null) {
-                                    Log.i(TAG, "Heartbeat caught browser violation: '$matched' in '$str'")
+                                    Log.i(TAG, "Heartbeat caught keyword violation in browser ($packageName)")
                                     withContext(Dispatchers.Main) {
                                         onViolation(packageName, matched, str)
                                     }
@@ -164,7 +159,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                             if (repository.isFastAdultContentBlockEnabled()) {
                                 val adultViolation = adultContentShield.checkViolation(extracted)
                                 if (adultViolation != null) {
-                                    Log.i(TAG, "Heartbeat caught universal adult violation: '${adultViolation.matchedTerm}'")
+                                    Log.i(TAG, "Heartbeat caught universal adult content violation in $packageName")
                                     withContext(Dispatchers.Main) {
                                         onViolation(packageName, "Adult Content", extracted)
                                     }
@@ -173,7 +168,7 @@ class BrowserHeartbeatTracker @Inject constructor(
                             }
                             val matched = keywordBlocker.isViolationDetectedSync(extracted)
                             if (matched != null) {
-                                Log.i(TAG, "Heartbeat caught universal violation: '$matched' in '$extracted'")
+                                Log.i(TAG, "Heartbeat caught universal keyword violation in $packageName")
                                 withContext(Dispatchers.Main) {
                                     onViolation(packageName, matched, extracted)
                                 }

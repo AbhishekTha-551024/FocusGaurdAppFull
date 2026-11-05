@@ -13,7 +13,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { subscribeToSupportTickets, updateSupportTicket } from '../firebase';
+import { subscribeToSupportTickets, updateSupportTicket, getAdminEmail, cacheTicketCodeLocally, getCachedTicketCode } from '../firebase';
 import { generateSupportCode, ACTION_DEFINITIONS } from '../crypto/codeGenerator';
 
 export default function SupportTicketsTab({ onGenerateForDevice }) {
@@ -21,6 +21,8 @@ export default function SupportTicketsTab({ onGenerateForDevice }) {
   const [filterStatus, setFilterStatus] = useState('pending');
   const [resolvingTicketId, setResolvingTicketId] = useState(null);
   const [copiedTicketId, setCopiedTicketId] = useState(null);
+  // Codes issued from this browser, keyed by ticket id (never stored in Firestore).
+  const [localCodes, setLocalCodes] = useState({});
 
   useEffect(() => {
     const unsubscribe = subscribeToSupportTickets((list) => {
@@ -42,12 +44,17 @@ export default function SupportTicketsTab({ onGenerateForDevice }) {
         targetPayload: ticket.targetPayload || ''
       });
 
+      // The PIN itself is never written to Firestore: this collection is readable from the phone,
+      // and a stored code sitting next to its deviceId would be a ready-made unlock for anyone who
+      // can list the collection. The fingerprint identifies the issuance; the code stays local.
       await updateSupportTicket(ticket.id, {
         status: 'resolved',
         resolvedAt: new Date().toISOString(),
-        responseCode: gen.code,
-        resolvedBy: 'support@focusguard.app'
+        responseCodeFingerprint: gen.codeFingerprint,
+        resolvedBy: getAdminEmail() || 'UNATTRIBUTED — no signed-in admin'
       });
+      cacheTicketCodeLocally(ticket.id, gen.code);
+      setLocalCodes((prev) => ({ ...prev, [ticket.id]: gen.code }));
 
       setResolvingTicketId(ticket.id);
 
@@ -74,7 +81,7 @@ export default function SupportTicketsTab({ onGenerateForDevice }) {
       status: 'rejected',
       resolvedAt: new Date().toISOString(),
       rejectionReason: reason,
-      resolvedBy: 'support@focusguard.app'
+      resolvedBy: getAdminEmail() || 'UNATTRIBUTED — no signed-in admin'
     });
   };
 
@@ -83,6 +90,13 @@ export default function SupportTicketsTab({ onGenerateForDevice }) {
     setCopiedTicketId(ticketId);
     setTimeout(() => setCopiedTicketId(null), 2000);
   };
+
+  /**
+   * New codes live only in this browser; `ticket.responseCode` is kept as a fallback so tickets
+   * resolved before this change still show the PIN their agent issued.
+   */
+  const codeFor = (ticket) =>
+    localCodes[ticket.id] || getCachedTicketCode(ticket.id) || ticket.responseCode || '';
 
   const pendingCount = tickets.filter((t) => t.status === 'pending').length;
 
@@ -216,19 +230,24 @@ export default function SupportTicketsTab({ onGenerateForDevice }) {
                           <span>Reject</span>
                         </button>
                       </div>
-                    ) : ticket.status === 'resolved' && ticket.responseCode ? (
+                    ) : ticket.status === 'resolved' && codeFor(ticket) ? (
                       <div className="ticket-resolved-box">
                         <div className="resolved-code-tag">
                           <span>Generated Code:</span>
-                          <strong className="code-text">{ticket.responseCode}</strong>
+                          <strong className="code-text">{codeFor(ticket)}</strong>
                           <button
-                            onClick={() => handleCopyCode(ticket.id, ticket.responseCode)}
+                            onClick={() => handleCopyCode(ticket.id, codeFor(ticket))}
                             className="btn-ghost btn-xs"
                             title="Copy Code"
                           >
                             {copiedTicketId === ticket.id ? <Check size={13} /> : <Copy size={13} />}
                           </button>
                         </div>
+                        {ticket.responseCodeFingerprint && (
+                          <span className="resolved-by-tag" title="Audit fingerprint (not the code)">
+                            Ledger: {ticket.responseCodeFingerprint.slice(0, 12)}…
+                          </span>
+                        )}
                         {ticket.resolvedBy && (
                           <span className="resolved-by-tag">Approved by {ticket.resolvedBy}</span>
                         )}
